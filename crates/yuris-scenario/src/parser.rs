@@ -146,7 +146,13 @@ fn parse_line(
     labels: &mut HashMap<String, usize>,
 ) -> Result<(), ScenarioError> {
     // ---- 标签行 ----
-    if let Some(name) = line.strip_prefix('#') {
+    // `#name` 与 `#=name` 均为标签定义;`#=` 形态的标签名取 `=` 之后
+    // (NEKO-NIN exHeart `#=TR_2A` 实证;源码 `#=es.BT.CG.SET` 即 es 族
+    // 跳转目标,与 docs/opcode/opcode-table.md 0x23 `#` 前缀记录一致)。
+    let label_line = line.strip_prefix('#').unwrap_or(line);
+    let label_name = label_line.strip_prefix('=').unwrap_or(label_line);
+    if line.starts_with('#') {
+        let name = label_name;
         let valid = !name.is_empty()
             && name
                 .bytes()
@@ -154,7 +160,7 @@ fn parse_line(
         if !valid {
             return Err(ScenarioError::Syntax {
                 line: line_no,
-                message: format!("非法标签行(应为 #[A-Za-z0-9_]+):{line:?}"),
+                message: format!("非法标签行(应为 #[=][A-Za-z0-9_]+):{line:?}"),
             });
         }
         labels.insert(name.to_string(), elements.len());
@@ -349,8 +355,11 @@ fn parse_args(
                 b',' => {
                     params.push(classify_param(&line[cur_start..i], line_no)?);
                     saw_comma = true;
-                    i += 1;
-                    cur_start = i;
+                    cur_start = i + 1;
+                    // 注意:此处不得再 i += 1 —— 外层 else 的 i += 1 对所有
+                    // 非 return 分支统一执行;若此处再加一次,每个逗号会
+                    // 吞掉其后的一个字符(NEKO-NIN exHeart「逗号紧跟参数」
+                    // 风格语料实证:参数整体错位,含空槽行报括号未闭合)。
                 }
                 b')' => {
                     // `()` = 零参数;否则收尾当前参数
