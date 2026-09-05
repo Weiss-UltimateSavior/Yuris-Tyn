@@ -2819,6 +2819,76 @@ logo(1046,-255) → 按钮列(1355,479/582/670 原生尺寸)+ EXTRAS/EXIT(1319/1
 
 ***
 
+## 2026-09-05 — 跨游戏验证 #1:NEKO-NIN exHeart(E-ris 555)实测 + 四处修复(成果 70,47 测试套件全绿)
+
+### 成果 70:第二游戏样本接入 —— **Confirmed(实测,macOS arm64)**
+
+样本:`NEKO-NIN exHeart`(猫忍之心,官方中文版,E-ris 555 / YPF 500 / YSTB key `58fffb91`,
+17 个外置 txt 剧本,Big5 编码)。与既有样本(AnimalTrailGirlishSquare 2)同引擎不同游戏,
+用于验证内核的**跨游戏通用性**。本条目所有修复均以「样本 A 能跑、样本 B 报错」的差异为证据。
+
+#### 1. scenario `parse_args` 逗号双重递进 —— **Confirmed(严重,已修)**
+
+- 现象:NEKO 剧本所有含空槽/无空格参数的行报「括号未闭合」,如 `\SE(seno_029,,180,)`;
+  整文件解析失败 → 双脚本系统 scenario 侧全灭。
+- 根因:`parse_args` 的 `b','` 分支内 `i += 1` 之后,外层 `else` 的 `i += 1` 再次执行
+  → **每个逗号吞掉其后 1 字节**。样本 A 语料恰为「逗号+空格」风格(`a, 260`),
+  跳过的恰是空格,歪打正着;NEKO「逗号紧跟参数」风格(`a,260`)即参数错位。
+  单行最小复现:`\SE(a,)` 修复前 FAIL、`\SE(a,,)` 解析成 `[Str("a"), Str(",")]`(静默错值)。
+- 修复:删逗号分支内 `i += 1`,参数起点改为 `cur_start = i + 1`;两种风格 + `(,)`/`(,800)`
+  空槽形态(模块文档既有断言)全部验证通过;47 套件全绿。
+- ⚠ 关联:样本 A 的 VM 侧素材坐标若曾由 scenario 参数驱动,需重验(B4 的
+  「无引擎侧数值对照」风险可能部分源于此)。
+
+#### 2. `#=name` 标签形态 —— **Confirmed(已修)**
+
+NEKO 剧本存在 `#=TR_2A` 标签行(与其余 `#TAM01` 并存);docs/opcode/opcode-table.md
+0x23 `#` 前缀记录(源码 `#=es.BT.CG.SET` 即 es 族跳转目标)与本实证一致。
+解析器原仅接受 `#name` → 直接报非法标签行。修复:`#` 后可选 `=`,标签名取 `=` 之后。
+
+#### 3. YPF 名字边界:NUL 候选结构化验证 + WAV 类型码 —— **Confirmed(已修)**
+
+- 现象:`PacFileIndex::scan_game_dir` 对 NEKO `se.ypf` 解析失败,**静默跳过**
+  → 全部 SE 音频不可用(684 条目)。其余 cg/cgsys/st/sn/sysse/sysvo/vo/update3 全闭合。
+- 根因:SE 条目名为 Shift-JIS(日文文件名),其中合法 SJIS 尾字节 0xC9 与 name_key
+  异或后恰为存储态 0x00(实证:`se\グラスに氷.ogg` 的「に」= SJIS 0x82C9,
+  存储态 `4B 00` —— 次字节即 0x00),cstring 扫描
+  在名字中途提前命中 NUL → 索引逐条漂移(delta 104B / 684 条)。
+  bytes.rs 的「0x00 不参与」假设对非 ASCII 名不成立。
+- 修复:`YpfIndex::from_path` 对每个 0x00 候选做结构化校验(se 型 stored 特征
+  `uncomp == comp` + bn 型 offset 落界),取首个通过者,全部失败回退首个 NUL;
+  顺带补 WAV 类型码(存储 0x05,解码 0xCC;host 侧 `read_stored_bytes` 同步)。
+- 附带修复:scan_game_dir 跳包由静默改为 eprintln 留痕(可观测性;op.ypf 报
+  bad magic 属预期,实为 ASF/WMV)。
+
+#### 4. `\LC` 台词命令 + 跨平台字体 —— **Confirmed(已修)**
+
+- NEKO 台词形态为 `\LE(英文)` + `\LC(中文)` 成对;播放器只实现样本 A 的
+  `\LT(中文)` → NEKO 全部台词不上屏且不阻塞。修复:`LC` 与 `LT` 同路处理。
+- 字体路径原硬编码 `C:\Windows\Fonts\msjh.ttc`(Windows-only)→ 改为按平台
+  候选回退(macOS:`STHeiti Light.ttc`/`Songti.ttc`/`PingFang.ttc` 等;Linux Noto CJK)。
+
+#### 5. 调试入口(不进核心路径,后续可一键移除)
+
+- `yuris-cli run` 新增 `--key-hex <8hex>`(YSTB 4 字节 XOR key,跨游戏必备;
+  正式方案为启动链自动 guess-key,见 yuris ystb guess-key)、`--lenient`
+  (VM `set_strict(false)`:Unsupported 命令记录后继续;NEKO 启动链 s184 pc=74
+  有 `DEBUGLIST`(0x09)未实现,strict 下 VM 卡 Error 态)、`--at` 失败原因打印。
+- 播放器现状:启动 → 标题(素材路径仍为样本 A 硬编码,NEKO 标题层未命中,
+  属 B3/P8.2 范畴)→ `--at 07` 跳入第一幕:BGM 循环 ✓、逐句 voice ✓、
+  BG 命中 ✓、台词上屏 ✓、点击推进 ✓。
+- 已知残余:`\BG.CMXYZ`/`\S.CLXYZ`/`\SP.*` 等定位/动画命令未实现(BG.CMXYZ 被
+  当 `\BG` 处理,首参数被当作资源名 → 纯色兜底);`\SE2/\SE3` 未实现;
+  VM Error 态下播放器逐帧重试刷日志(lenient 下未复现,但 Error 恢复策略仍欠)。
+
+### 测试与状态
+
+- `cargo build --workspace` / `cargo test --workspace`(47 套件)macOS arm64
+  Rust 1.98 全绿,零平台特化代码改动即跨平台。
+- 复现:`cargo run --release -p yuris-cli -- run "<NEKO-NIN exHeart>" --key-hex 58fffb91 --lenient --at 07`
+
+***
+
 ## 更新约定
 
 每次更新本文件时：
