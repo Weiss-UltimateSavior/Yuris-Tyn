@@ -1,0 +1,18 @@
+[package]
+name = "yuris-vm"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L3：PC / 值栈 / 调用栈 / 变量区。必须支持 suspend/resume，绝不阻塞。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-value = { workspace = true }
+yuris-script = { workspace = true }
+yuris-format = { workspace = true }
+yuris-expr = { workspace = true }
+yuris-scene = { workspace = true }
+yuris-runtime = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

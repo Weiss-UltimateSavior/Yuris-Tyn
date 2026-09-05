@@ -1,0 +1,71 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/yuris-core",
+    "crates/yuris-format",
+    "crates/yuris-value",
+    "crates/yuris-script",
+    "crates/yuris-expr",
+    "crates/yuris-vm",
+    "crates/yuris-scene",
+    "crates/yuris-resource",
+    "crates/yuris-runtime",
+    "crates/yuris-render",
+    "crates/yuris-audio",
+    "crates/yuris-input",
+    "crates/yuris-save",
+    "crates/yuris-scenario",
+    "crates/yuris-tools",
+    "crates/yuris-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["YurisKernel contributors"]
+license = "GPL-3.0-or-later"
+repository = ""
+
+[workspace.dependencies]
+# --- internals ---
+yuris-core     = { path = "crates/yuris-core" }
+yuris-format   = { path = "crates/yuris-format" }
+yuris-value    = { path = "crates/yuris-value" }
+yuris-script   = { path = "crates/yuris-script" }
+yuris-expr     = { path = "crates/yuris-expr" }
+yuris-vm       = { path = "crates/yuris-vm" }
+yuris-scene    = { path = "crates/yuris-scene" }
+yuris-resource = { path = "crates/yuris-resource" }
+yuris-runtime  = { path = "crates/yuris-runtime" }
+yuris-render   = { path = "crates/yuris-render" }
+yuris-audio    = { path = "crates/yuris-audio" }
+yuris-input    = { path = "crates/yuris-input" }
+yuris-save     = { path = "crates/yuris-save" }
+yuris-scenario = { path = "crates/yuris-scenario" }
+
+# --- externals ---
+thiserror          = "2"
+encoding_rs        = "0.8"
+tracing            = "0.1"
+tracing-subscriber = "0.3"
+anyhow             = "1"
+byteorder          = "1"
+flate2             = "1"
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+bincode            = "1"
+smallvec           = "1"
+lru                = "0.12"
+clap               = { version = "4", features = ["derive"] }
+image              = "0.25"
+symphonia          = { version = "0.5", features = ["ogg", "vorbis"] }
+wgpu               = "24"
+winit              = "0.30"
+pollster           = "0.4"
+fontdue            = "0.9"
+rodio              = { version = "0.19", features = ["vorbis"] }
+bytemuck           = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

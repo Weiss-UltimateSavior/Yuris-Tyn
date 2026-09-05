@@ -1,0 +1,14 @@
+[package]
+name = "yuris-format"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L0+L1：YPF 封包、YSTB/YSCF/YSCM 容器、XOR、zlib。"
+
+[dependencies]
+yuris-core = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+byteorder = { workspace = true }
+flate2 = { workspace = true }

@@ -1,0 +1,15 @@
+[package]
+name = "yuris-save"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "存档快照：VM 状态 + Scene 状态 + 必要 Runtime 状态。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-value = { workspace = true }
+yuris-scene = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }

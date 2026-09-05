@@ -1,0 +1,34 @@
+[package]
+name = "yuris-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "播放器入口。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-format = { workspace = true }
+yuris-resource = { workspace = true }
+yuris-vm = { workspace = true }
+yuris-scene = { workspace = true }
+yuris-value = { workspace = true }
+fontdue = { workspace = true }
+rodio = { workspace = true }
+image = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+yuris-scenario = { workspace = true }
+encoding_rs = "0.8"
+yuris-runtime = { workspace = true }
+yuris-render = { workspace = true }
+yuris-audio = { workspace = true }
+yuris-input = { workspace = true }
+yuris-save = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+bytemuck = { workspace = true }
+winit = { workspace = true }
+wgpu = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "yuris-expr"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "表达式引擎：Token -> AST -> Evaluator。不转译成其他语言执行。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-value = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

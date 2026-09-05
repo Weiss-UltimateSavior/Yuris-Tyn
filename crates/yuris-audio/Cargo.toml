@@ -1,0 +1,13 @@
+[package]
+name = "yuris-audio"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L6：AudioBackend 实现（BGM / SE / Voice 通道语义）。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-runtime = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,3 @@
+{"ev":"call","from":0,"to":2}
+{"ev":"group","pc":0,"cmd":43,"cond":{"int":1}}
+{"ev":"group","pc":2,"cmd":53,"cond":{"int":5}}

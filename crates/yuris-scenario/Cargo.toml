@@ -1,0 +1,12 @@
+[package]
+name = "yuris-scenario"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "P7.2：sc.ypf 明文剧本（scenario*.txt）词法/行解析器 —— 标签/命令/参数/对话/注释剥离。"
+
+[dependencies]
+yuris-core = { workspace = true }
+thiserror = { workspace = true }
+encoding_rs = { workspace = true }

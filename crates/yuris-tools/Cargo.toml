@@ -1,0 +1,27 @@
+[package]
+name = "yuris-tools"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "开发向 CLI：ypf / ystb / trace / opcode-scan。无 GUI。"
+
+[[bin]]
+name = "yuris"
+path = "src/main.rs"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-format = { workspace = true }
+yuris-value = { workspace = true }
+yuris-script = { workspace = true }
+yuris-vm = { workspace = true }
+yuris-runtime = { workspace = true }
+yuris-render = { workspace = true }
+yuris-audio = { workspace = true }
+yuris-input = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }

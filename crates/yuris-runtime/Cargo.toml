@@ -1,0 +1,15 @@
+[package]
+name = "yuris-runtime"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L4：RuntimeApi / GraphicsBackend / AudioBackend / InputBackend / StorageBackend trait。Kernel 与平台之间的唯一边界。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-value = { workspace = true }
+yuris-scene = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }

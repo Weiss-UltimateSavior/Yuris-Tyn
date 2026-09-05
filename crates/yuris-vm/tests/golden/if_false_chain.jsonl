@@ -1,0 +1,5 @@
+{"ev":"jump","from":0,"to":2,"kind":"if_false"}
+{"ev":"group","pc":0,"cmd":44,"cond":{"int":0}}
+{"ev":"group","pc":2,"cmd":11,"cond":null}
+{"ev":"group","pc":3,"cmd":48,"cond":null}
+{"ev":"group","pc":4,"cmd":79,"cond":null}

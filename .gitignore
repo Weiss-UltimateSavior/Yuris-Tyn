@@ -1,0 +1,42 @@
+# ===== 游戏本体与衍生数据(版权所有,禁止分发)=====
+# 游戏安装目录(Whirlpool《动物×娘☆ Girlish Square 2》)
+AnimalTrailGirlishSquare 2/
+*.ypf
+*.ymv
+*.exe
+*.dll
+# 游戏存档(运行时生成)
+save/
+*.sd
+
+# ===== 引擎执行 trace(游戏衍生数据,66MB;且为逐命令脚本流)=====
+crates/yuris-vm/tests/golden/engine/
+*.jsonl.tmp
+
+# ===== 构建产物 =====
+target/
+**/target/
+
+# ===== 反编译产物(派生自版权二进制;默认不入库,见 docs 决策)=====
+docs/reverse/decompiled/
+
+# ===== 编辑器/系统 =====
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+.DS_Store
+
+# ===== 临时/会话 =====
+*.log
+*.tmp
+~$*
+
+# ===== Python =====
+__pycache__/
+*.pyc
+
+# ===== 会话/临时脚本产物 =====
+tmp_*.py
+tmp_*.txt
+bt_probe.log

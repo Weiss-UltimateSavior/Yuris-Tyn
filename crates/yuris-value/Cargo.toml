@@ -1,0 +1,12 @@
+[package]
+name = "yuris-value"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Value 类型与变量存储。YU-RIS 的类型转换语义在此实现，不使用 serde_json::Value。"
+
+[dependencies]
+yuris-core = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }

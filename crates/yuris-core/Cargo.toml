@@ -1,0 +1,13 @@
+[package]
+name = "yuris-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "错误类型、版本 Profile、字节工具（XOR / 定长整数读取）。无业务逻辑，被所有 crate 依赖。"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+byteorder = { workspace = true }

@@ -1,0 +1,14 @@
+[package]
+name = "yuris-script"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L2：变长 VM 字节码 -> Instruction IR。未识别 opcode 保留原始字节，绝不猜测。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-value = { workspace = true }
+
+[dev-dependencies]
+yuris-format = { workspace = true }

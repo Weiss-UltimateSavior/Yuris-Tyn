@@ -1,0 +1,13 @@
+[package]
+name = "yuris-scene"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L5：Scene / Layer / Animation 纯状态。不触碰任何平台 API。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-value = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

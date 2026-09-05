@@ -1,0 +1,16 @@
+[package]
+name = "yuris-resource"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "资源管理器：懒加载 + LRU 缓存 + 免封包目录覆盖。"
+
+[dependencies]
+yuris-core = { workspace = true }
+yuris-format = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+lru = { workspace = true }
+image = { workspace = true }
+symphonia = { workspace = true }
