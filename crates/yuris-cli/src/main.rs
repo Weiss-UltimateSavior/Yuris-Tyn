@@ -42,6 +42,24 @@ fn main() {
         .iter()
         .position(|a| a == "--at")
         .and_then(|i| rest.get(i + 1).cloned());
+    // 调试项:YSTB 4 字节循环 XOR 密钥(不同游戏各异)。缺省 = 本项目样本密钥。
+    // 正式方案是启动链对首个 YSTB 条目自动 guess-key(见 yuris ystb guess-key)。
+    let ystb_key: [u8; 4] = rest
+        .iter()
+        .position(|a| a == "--key-hex")
+        .and_then(|i| rest.get(i + 1))
+        .and_then(|hex| {
+            if hex.len() == 8 {
+                u32::from_str_radix(hex, 16)
+                    .ok()
+                    .map(|v| v.to_be_bytes())
+            } else {
+                None
+            }
+        })
+        .unwrap_or([0x2b, 0x90, 0x4f, 0x93]);
+    // 调试项:非 strict 模式 —— Unsupported 命令记录事件后继续(默认 strict 挂起)。
+    let lenient = rest.iter().any(|a| a == "--lenient");
     let game_dir = std::path::PathBuf::from(&dir);
     if !game_dir.is_dir() {
         eprintln!("游戏目录不存在:{}", game_dir.display());
@@ -57,7 +75,7 @@ fn main() {
     let booted = Bootstrap {
         ypf_bytes: bytes,
         name_key: 0xC9,
-        key: [0x2b, 0x90, 0x4f, 0x93],
+        key: ystb_key,
         entry_label: None, // SYSTEM_START
     }
     .boot()
@@ -68,6 +86,9 @@ fn main() {
     );
     let mut vm = booted.vm;
     vm.set_file_probe(index.clone());
+    if lenient {
+        vm.set_strict(false);
+    }
 
     // ---- scenario 文件(P7.3)----
     let sc_ypf = game_dir.join("pac").join("sc.ypf");
@@ -88,10 +109,8 @@ fn main() {
         .expect("音频包索引");
     let audio = crate::audio::Audio::new();
 
-    // ---- CJK 字体(繁中)----
-    let font_bytes = std::fs::read(r"C:\Windows\Fonts\msjh.ttc")
-        .or_else(|_| std::fs::read(r"C:\Windows\Fonts\simsun.ttc"))
-        .expect("系统 CJK 字体");
+    // ---- CJK 字体(繁中优先;按平台回退)----
+    let font_bytes = load_cjk_font().expect("系统 CJK 字体");
     let font = fontdue::Font::from_bytes(
         font_bytes,
         fontdue::FontSettings {
@@ -136,7 +155,13 @@ fn main() {
     // scenario 入口:scenario_start.txt → RELEASE 段(构建模式段选择,Likely)
     // scenario 入口:--at 调试跳转 或 scenario_start.txt RELEASE 段
     let started = if let Some(l) = &at_label {
-        player.scenario.goto(l).is_ok()
+        match player.scenario.goto(l) {
+            Ok(()) => true,
+            Err(e) => {
+                eprintln!("[scenario] --at {l} 跳转失败: {e}");
+                false
+            }
+        }
     } else {
         player
             .scenario
@@ -156,6 +181,26 @@ fn main() {
 }
 
 /// 客户区像素 → 逻辑坐标(整窗线性映射;letterbox 误差由渲染侧吸收)。
+/// 按平台候选路径加载 CJK 字体(繁中优先,其次简中/日文)。
+fn load_cjk_font() -> Option<Vec<u8>> {
+    const CANDIDATES: &[&str] = &[
+        // Windows
+        r"C:\Windows\Fonts\msjh.ttc",
+        r"C:\Windows\Fonts\simsun.ttc",
+        // macOS
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Supplemental/Songti.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        // Linux(Noto CJK 常见路径)
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    ];
+    CANDIDATES
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+}
+
 fn letterbox_logical(ww: u32, wh: u32, px: f64, py: f64) -> (i64, i64) {
     if ww == 0 || wh == 0 {
         return (0, 0);

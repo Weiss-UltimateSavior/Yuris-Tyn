@@ -442,7 +442,10 @@ impl ScenarioPlayer {
                 self.pending_le = s(0);
                 false
             }
-            "LT" => {
+            "LT" | "LC" => {
+                // LT = 样本语料(AnimalTrail)主台词行;LC = NEKO-NIN exHeart
+                // 语料的中文主台词行(\LE 英文 + \LC 中文成对,LE 先行)。
+                // 两者语义对称:主文本 + pending 英文上屏并阻塞等待。
                 let lt = s(0);
                 host.clear_text();
                 host.show_text(self.pending_id, &lt, &self.pending_le.clone());
