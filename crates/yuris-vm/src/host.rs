@@ -200,8 +200,16 @@ impl PacFileIndex {
                                     idx.names.insert(e.name.clone());
                                 }
                             }
-                            Err(_) => {
-                                // 头加密等不可解析包:跳过(不阻断存在性检查)
+                            Err(e) => {
+                                // 头加密等不可解析包:跳过(不阻断存在性检查),
+                                // 但必须留痕 —— 静默跳包会让整包资源「无声消失」
+                                // (NEKO-NIN exHeart se.ypf 实证)。
+                                eprintln!(
+                                    "[pac] 跳过不可解析包 {}: {e}",
+                                    p.file_name()
+                                        .map(|s| s.to_string_lossy())
+                                        .unwrap_or_default()
+                                );
                                 idx.skipped.push(
                                     p.file_name()
                                         .map(|s| s.to_string_lossy().into_owned())
@@ -368,12 +376,12 @@ impl PacFileIndex {
         self.entry_lookup.keys()
     }
 
-    /// 读 stored 条目内容(se 型明文 OGG/PNG;精确键;P9.1 音频用)。
+    /// 读 stored 条目内容(se 型明文 OGG/PNG/WAV;精确键;P9.1 音频用)。
     pub fn read_stored_bytes(&self, path: &str) -> Option<Vec<u8>> {
         use std::io::{Read, Seek, SeekFrom};
         let (pack_path, e) = self.resolve_entry(path, false)?;
-        if e.flag != 0xCB && e.flag != 0xCF {
-            return None; // 仅 stored PNG/OGG
+        if e.flag != 0xCB && e.flag != 0xCF && e.flag != 0xCC {
+            return None; // 仅 stored PNG/OGG/WAV
         }
         let mut f = std::fs::File::open(pack_path).ok()?;
         f.seek(SeekFrom::Start(e.offset as u64)).ok()?;
