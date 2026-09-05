@@ -3,8 +3,6 @@
 > **用 Rust 从零实现一个 YU-RIS 引擎兼容运行内核:直接读取原始游戏数据并运行原游戏。**
 > 不是提取器,不是反编译器,不是转换器。
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#许可)
-
 ## 项目简介
 
 本项目通过对引擎二进制的逆向分析,以纯 Rust 重新实现其运行时内核:解析 YPF 封包、解码 YSTB 字节码、
