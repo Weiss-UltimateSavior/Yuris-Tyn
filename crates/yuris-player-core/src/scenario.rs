@@ -457,6 +457,7 @@ impl ScenarioPlayer {
             "GO" if modifiers.iter().any(|m| m == "IF") => {
                 // \GO.G.IF(槽, op, 值, 目标):全局槽比较跳转。
                 // 槽 n ≈ @50[n](Likely;\GO.G.IF 全局槽语义见 PROGRESS B5,
+                // UNVERIFIED:映射未真机对照,新游戏走末尾 \GO 兜底,
                 // 新游戏走末尾 \GO(SCENARIO_MAIN) 兜底,不影响首通)。
                 let slot = n(0).max(0) as usize;
                 let op = s(1);
@@ -531,3 +532,65 @@ fn color_of(name: &str) -> [u8; 3] {
 /// 编码导入占位(保持与 parse_scenario_with 同一编码族引用)。
 #[allow(unused_imports)]
 use encoding_rs as _;
+
+
+#[cfg(test)]
+mod go_gif_tests {
+    //! \GO.G.IF 行为对照测试(Likely 级:@50[n] 映射未真机对照,见 PROGRESS B5;
+    //! 本测试验证比较算子与跳转分支逻辑本身)。
+
+    use super::*;
+
+    struct TestHost {
+        slot: std::cell::Cell<i64>,
+        resets: std::cell::Cell<usize>,
+    }
+    impl ScenarioHost for TestHost {
+        fn show_bg(&mut self, _: &str, _: u64, _: [u8; 3]) {}
+        fn show_sprite(&mut self, _: &str, _: Option<&str>, _: i64, _: i64, _: u64) {}
+        fn show_tachie(&mut self, _: &str, _: i64, _: i64, _: u64) {}
+        fn hide_sprite(&mut self, _: &str, _: u64) {}
+        fn fade(&mut self, _: bool, _: u64, _: [u8; 3]) {}
+        fn show_text(&mut self, _: Option<u32>, _: &str, _: &str) {}
+        fn clear_text(&mut self) {}
+        fn play_voice(&mut self, _: &str) {}
+        fn play_bgm(&mut self, _: &str, _: Option<i64>) {}
+        fn play_se(&mut self, _: &str) {}
+        fn title_screen(&mut self) {}
+        fn poll_choice(&mut self, _: usize) -> Option<usize> { None }
+        fn show_choices(&mut self, _: &[String]) {}
+        fn clear_choices(&mut self) {}
+        fn reset_scene(&mut self) { self.resets.set(self.resets.get() + 1); }
+        fn global(&self, _: usize) -> i64 { self.slot.get() }
+        fn log(&mut self, _: &str) {}
+    }
+
+    /// scenario:`#S` 段内一条 \GO.G.IF;reset_scene 次数 = 是否跳转。
+    fn run_goto_gif(script: &str, slot: i64) -> usize {
+        let mut p = ScenarioPlayer::new(vec![("t.txt".into(), script.as_bytes().to_vec())]);
+        let _ = p.goto("S"); // 惰性解析:先定位标签
+        let mut h = TestHost { slot: std::cell::Cell::new(slot), resets: std::cell::Cell::new(0) };
+        p.tick(&mut h, false);
+        h.resets.get()
+    }
+
+    #[test]
+    fn go_gif_hit_and_miss() {
+        let sc = "#S\n\\GO.G.IF(1, \"==\", 2, T)\n\\GO(END0)\n#T\n";
+        // 槽=2,==2 → 命中跳 T(reset_scene 1 次)
+        assert_eq!(run_goto_gif(sc, 2), 1, "== 命中应跳转");
+        // 槽=0,==2 → 未命中,不跳(无 reset_scene)
+        assert_eq!(run_goto_gif(sc, 0), 0, "== 未命中不应跳转");
+    }
+
+    #[test]
+    fn go_gif_other_ops() {
+        let base = |op: &str| format!("#S\n\\GO.G.IF(1, \"{op}\", 2, T)\n\\GO(END0)\n#T\n");
+        assert_eq!(run_goto_gif(&base(">="), 2), 1);
+        assert_eq!(run_goto_gif(&base(">="), 1), 0);
+        assert_eq!(run_goto_gif(&base("!="), 3), 1);
+        assert_eq!(run_goto_gif(&base("!="), 2), 0);
+        assert_eq!(run_goto_gif(&base("<"), 1), 1);
+        assert_eq!(run_goto_gif(&base("<="), 2), 1);
+    }
+}
