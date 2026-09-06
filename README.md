@@ -25,7 +25,7 @@
 
 ## 架构
 
-Cargo workspace,16 个 crate 按层次划分:
+Cargo workspace,17 个 crate 按层次划分:
 
 | 层 | Crate | 职责 |
 |---|---|---|
@@ -42,7 +42,8 @@ Cargo workspace,16 个 crate 按层次划分:
 | P7 | `yuris-scenario` | 明文剧本(scenario\*.txt)词法/行解析器 |
 | — | `yuris-scenario` 双脚本系统:YSTB VM + scenario 播放器并行驱动 | |
 | — | `yuris-core` | 错误类型、字节工具、版本 Profile(地基) |
-| — | `yuris-cli` | 播放器入口(`yuris-cli run <游戏目录>`) |
+| — | `yuris-player-core` | 平台无关播放器核心:PlayerCore/Player/scenario 播放器/音频(桌面壳与 Android 壳共用) |
+| — | `yuris-cli` | 播放器入口(桌面壳:窗口/事件循环/输入翻译;`yuris-cli run <游戏目录>`) |
 | — | `yuris-tools` | 开发向 CLI:ypf / ystb / trace / opcode-scan |
 
 ## 已逆向的格式(均为实测 Confirmed)
@@ -83,7 +84,7 @@ cargo run --release -p yuris-cli -- run "<游戏目录>" --key-hex <8hex> --leni
 ## 目录结构
 
 ```text
-├── crates/            # 16 个 Rust crate(workspace members)
+├── crates/            # 17 个 Rust crate(workspace members)
 ├── docs/              # 架构设计、格式规格、命令语义、opcode 表
 │   ├── formats/       #   YPF/YSTB/YSCM/YSER 格式文档
 │   ├── engine/        #   命令层语义(含系统变量 case 表)

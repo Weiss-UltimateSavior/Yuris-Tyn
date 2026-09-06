@@ -1,5 +1,8 @@
 //! 平台无关播放器核心(P-core)。
 //!
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+//!
 //! 从 yuris-cli 抽出:PlayerCore(ScenarioHost 实现)/ Player(tick/按键/快存快读)/
 //! scenario 播放器 / rodio 音频 / letterbox 数学。winit 事件循环、窗口创建与
 //! 输入翻译归平台壳(desktop `yuris-cli` / android `neko-android`);本 crate
