@@ -1177,6 +1177,8 @@ LAB\_00453178/LAB\_004550a0 来自 FUN\_0046305c 命令表,下标换算 slot=ind
 | 格式      | YPF entry 布局                          | **Confirmed**                          | 308 间距逐条吻合；末条 tail 被 `first_data_off` 钳制，解析后精确闭合                             |
 | 格式      | YPF 文件名 XOR 0xC9                      | **Confirmed**                          | 仅本样本；跨版本待验                                                                   |
 | 格式      | YPF 虚拟根前缀 `$`/`%`/`9`                 | **Confirmed（存在）** / 语义 Unknown         | 属名字一部分，与尺寸算术自洽                                                               |
+| 格式      | YPF se 型条目类型码 PNG/OGG/WAV           | **Confirmed**                          | 0x02/0x06/0x05(解码 0xCB/0xCF/0xCC);第二样本实证(成果 70/71)                        |
+| 格式      | YPF 名字边界(0xC9 尾字节假 NUL)           | **Confirmed**                          | SJIS 尾字节 0xC9 异或后=存储 0x00;结构化校验消歧(成果 70 §3)                          |
 | 格式      | YPF entry tail 8 字节                   | Unknown                                | 疑似校验和                                                                        |
 | 格式      | YSTB header                           | **Confirmed**                          | 8 字段，样本 v555                                                                 |
 | 格式      | YSTB XOR（4 字节循环，跳 0x20）               | **Confirmed**                          | 机制确认；密钥可**自动猜测**（成果 9）                                                       |
@@ -2816,6 +2818,132 @@ logo(1046,-255) → 按钮列(1355,479/582/670 原生尺寸)+ EXTRAS/EXIT(1319/1
 - 播放链路实测:启动 → 厂商 CG(logo 1.1s 淡入/3s/0.8s 淡出)→ 注意事项 →
   FOUT → 标题(分层组合 + 真实按钮)→ 点击 START → maho2_01(BGM + voice +
   台词推进)✓;选择肢命中跳转 ✓;F5/F9 回滚 ✓。
+
+***
+
+## 2026-09-05 — 跨游戏验证 #1:NEKO-NIN exHeart(E-ris 555)实测 + 四处修复(成果 70,47 测试套件全绿)
+
+### 成果 70:第二游戏样本接入 —— **Confirmed(实测,macOS arm64)**
+
+样本:`NEKO-NIN exHeart`(猫忍之心,官方中文版,E-ris 555 / YPF 500 / YSTB key `58fffb91`,
+17 个外置 txt 剧本,Big5 编码)。与既有样本(AnimalTrailGirlishSquare 2)同引擎不同游戏,
+用于验证内核的**跨游戏通用性**。本条目所有修复均以「样本 A 能跑、样本 B 报错」的差异为证据。
+
+#### 1. scenario `parse_args` 逗号双重递进 —— **Confirmed(严重,已修)**
+
+- 现象:NEKO 剧本所有含空槽/无空格参数的行报「括号未闭合」,如 `\SE(seno_029,,180,)`;
+  整文件解析失败 → 双脚本系统 scenario 侧全灭。
+- 根因:`parse_args` 的 `b','` 分支内 `i += 1` 之后,外层 `else` 的 `i += 1` 再次执行
+  → **每个逗号吞掉其后 1 字节**。样本 A 语料恰为「逗号+空格」风格(`a, 260`),
+  跳过的恰是空格,歪打正着;NEKO「逗号紧跟参数」风格(`a,260`)即参数错位。
+  单行最小复现:`\SE(a,)` 修复前 FAIL、`\SE(a,,)` 解析成 `[Str("a"), Str(",")]`(静默错值)。
+- 修复:删逗号分支内 `i += 1`,参数起点改为 `cur_start = i + 1`;两种风格 + `(,)`/`(,800)`
+  空槽形态(模块文档既有断言)全部验证通过;47 套件全绿。
+- ⚠ 关联:样本 A 的 VM 侧素材坐标若曾由 scenario 参数驱动,需重验(B4 的
+  「无引擎侧数值对照」风险可能部分源于此)。
+
+#### 2. `#=name` 标签形态 —— **Confirmed(已修)**
+
+NEKO 剧本存在 `#=TR_2A` 标签行(与其余 `#TAM01` 并存);docs/opcode/opcode-table.md
+0x23 `#` 前缀记录(源码 `#=es.BT.CG.SET` 即 es 族跳转目标)与本实证一致。
+解析器原仅接受 `#name` → 直接报非法标签行。修复:`#` 后可选 `=`,标签名取 `=` 之后。
+
+#### 3. YPF 名字边界:NUL 候选结构化验证 + WAV 类型码 —— **Confirmed(已修)**
+
+- 现象:`PacFileIndex::scan_game_dir` 对 NEKO `se.ypf` 解析失败,**静默跳过**
+  → 全部 SE 音频不可用(684 条目)。其余 cg/cgsys/st/sn/sysse/sysvo/vo/update3 全闭合。
+- 根因:SE 条目名为 Shift-JIS(日文文件名),其中合法 SJIS 尾字节 0xC9 与 name_key
+  异或后恰为存储态 0x00(实证:`se\グラスに氷.ogg` 的「に」= SJIS 0x82C9,
+  存储态 `4B 00` —— 次字节即 0x00),cstring 扫描
+  在名字中途提前命中 NUL → 索引逐条漂移(delta 104B / 684 条)。
+  bytes.rs 的「0x00 不参与」假设对非 ASCII 名不成立。
+- 修复:`YpfIndex::from_path` 对每个 0x00 候选做结构化校验(se 型 stored 特征
+  `uncomp == comp` + bn 型 offset 落界),取首个通过者,全部失败回退首个 NUL;
+  顺带补 WAV 类型码(存储 0x05,解码 0xCC;host 侧 `read_stored_bytes` 同步)。
+- 附带修复:scan_game_dir 跳包由静默改为 eprintln 留痕(可观测性;op.ypf 报
+  bad magic 属预期,实为 ASF/WMV)。
+
+#### 4. `\LC` 台词命令 + 跨平台字体 —— **Confirmed(已修)**
+
+- NEKO 台词形态为 `\LE(英文)` + `\LC(中文)` 成对;播放器只实现样本 A 的
+  `\LT(中文)` → NEKO 全部台词不上屏且不阻塞。修复:`LC` 与 `LT` 同路处理。
+- 字体路径原硬编码 `C:\Windows\Fonts\msjh.ttc`(Windows-only)→ 改为按平台
+  候选回退(macOS:`STHeiti Light.ttc`/`Songti.ttc`/`PingFang.ttc` 等;Linux Noto CJK)。
+
+#### 5. 调试入口(不进核心路径,后续可一键移除)
+
+- `yuris-cli run` 新增 `--key-hex <8hex>`(YSTB 4 字节 XOR key,跨游戏必备;
+  正式方案为启动链自动 guess-key,见 yuris ystb guess-key)、`--lenient`
+  (VM `set_strict(false)`:Unsupported 命令记录后继续;NEKO 启动链 s184 pc=74
+  有 `DEBUGLIST`(0x09)未实现,strict 下 VM 卡 Error 态)、`--at` 失败原因打印。
+- 播放器现状:启动 → 标题(素材路径仍为样本 A 硬编码,NEKO 标题层未命中,
+  属 B3/P8.2 范畴)→ `--at 07` 跳入第一幕:BGM 循环 ✓、逐句 voice ✓、
+  BG 命中 ✓、台词上屏 ✓、点击推进 ✓。
+- 已知残余:`\BG.CMXYZ`/`\S.CLXYZ`/`\SP.*` 等定位/动画命令未实现(BG.CMXYZ 被
+  当 `\BG` 处理,首参数被当作资源名 → 纯色兜底);`\SE2/\SE3` 未实现;
+  VM Error 态下播放器逐帧重试刷日志(lenient 下未复现,但 Error 恢复策略仍欠)。
+
+### 测试与状态
+
+- `cargo build --workspace` / `cargo test --workspace`(47 套件)macOS arm64
+  Rust 1.98 全绿,零平台特化代码改动即跨平台。
+- 复现:`cargo run --release -p yuris-cli -- run "<NEKO-NIN exHeart>" --key-hex 58fffb91 --lenient --at 07`
+
+***
+
+## 2026-09-06 — 播放器核心抽取 + 文本渲染三修复(成果 71,49 测试套件全绿)
+
+### 成果 71:refactor player-core + 文本渲染修复 —— **Confirmed(实测)**
+
+#### 1. 平台无关播放器核心 `yuris-player-core`(refactor)
+
+- 播放器 glue(PlayerCore/Player/scenario 播放器/rodio 音频/letterbox/字体回退)
+  从 `yuris-cli` bin 迁出为独立 crate;`yuris-cli` 变薄壳(winit 事件循环/窗口/
+  键鼠翻译)。桌面与 Android 壳共用同一核心(winit 0.30 官方支持
+  android-activity)。行为零变化(冒烟回归一致);补全库一致 lint 属性。
+- 验证:`cargo test --workspace` 全绿;实机 BGM/voice/台词/存读档一致。
+
+#### 2. 前导零标签跳转失败(\GO(01) → "1") —— **Confirmed**
+
+- 参数分类器把数字形态参数 Int 化,`01`→`1`,而标签 `#01` 按串匹配 → 查无。
+- 修复:前导零数字按裸词 Str 保留(宽度即语义;NEKO-NIN exHeart `\GO(01)`
+  实证)。验证:测试 + 实机标题 → START → 01 场景跳转成功。
+
+#### 3. \GO.G.IF 全局槽跳转落地 —— **Confirmed(形态)/Likely(映射)**
+
+- 原被当普通 \GO 跳到 s(0)。实现六算子比较跳转;槽 n ≈ @50[n] 为 Likely
+  (PROGRESS B5:未真机对照),按纪律加 `// UNVERIFIED` 标注 + 对照测试
+  (命中/未命中 × 六算子);未命中走后续 \GO(SCENARIO_MAIN) 兜底。
+
+#### 4. 文字下半截被裁真根因:fontdue Metrics.ymin 语义 —— **Confirmed(实测推翻旧认知)**
+
+- 实测 STHeiti 40px:「猫」ymin=-4 height=37、ascent=34.4 —— fontdue 的
+  ymin 是**从行顶(ascent 线)向下**的偏移,非基线系。旧实现按基线解释 →
+  整字下坠 34px,底部被 canvas 裁掉(「文字只显示一半」)。
+- 修复:字形位 = 行顶 + ymin;canvas 高 = pad + 行盒 × 行数。新增
+  `text_metrics_tests` 实测探针固化语义假设。单行/多行台词完整显示。
+
+#### 5. 繁→简显示转换(显示层特性)
+
+- show_text 接入 fast2s(仅显示层,剧本数据不动;繁中语料下的简体显示偏好)。
+
+#### 6. \LC 台词命令 + CJK 字体跨平台回退 + 调试参数(--key-hex/--lenient)
+
+- \LC 与 \LT 同路处理(第二样本 \LE 英文 + \LC 中文成对,\LT 为本样本形态);
+- 字体路径按平台候选(Windows/macOS/Android/Linux);--key-hex(过渡,正式路径
+  guess-key)/--lenient(strict 旁路)/--at 失败原因打印;README 用法段同步。
+
+### 勘误关联
+
+- 03-phase1-plan.md「0x00 不参与 XOR」表述与 ypf.md 单布局描述已在
+  成果 70 配套文档提交中补勘误注。
+- fontdue ymin 语义推翻「基线系」直觉认知,实测数据见 §4(可复现:
+  text_metrics_tests)。
+
+### 测试与状态
+
+- **49 测试套件全绿**(新增 GO.G.IF 对照测试 3 例 + 字体 metrics 探针);
+  macOS arm64 / Rust 1.98。
 
 ***
 
