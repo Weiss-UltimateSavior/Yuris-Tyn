@@ -39,6 +39,10 @@ pub fn load_cjk_font() -> Option<Vec<u8>> {
         "/System/Library/Fonts/Supplemental/Songti.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        // Android(系统 Noto CJK;TC 优先 —— 语料为繁中)
+        "/system/fonts/NotoSansTC-Regular.otf",
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/NotoSansSC-Regular.otf",
         // Linux(Noto CJK 常见路径)
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -242,10 +246,23 @@ impl PlayerCore {
             ));
         }
         let width = (*row_w.iter().max().unwrap_or(&0)).clamp(60, max_w as i32) as usize;
-        let height = (line_h * rows.len() as f32 + 16.0) as usize;
+        // fontdue Metrics.ymin 语义 = **从行顶(ascent 线)向下**的偏移
+        // (实测 STHeiti 40px:'猫' ymin=-4 height=37,即字形顶略越行顶、
+        // 底距行顶 33 < ascent 34.4 —— 若按基线解释会整字下坠 34px,
+        // 底部全被 canvas 裁掉,即「文字只显示一半」)。因此字形位 =
+        // 行顶 + ymin,canvas 高按行盒算,与基线无关。
+        let (ascent, descent) = match self.font.horizontal_line_metrics(px) {
+            Some(hm) => (hm.ascent, hm.descent.min(0.0)),
+            None => (px * 0.9, -px * 0.15),
+        };
+        let pad_top = 4.0f32;
+        let line_box = ((ascent - descent) as usize).max(1); // 行盒高(≈40)
+        let height = (pad_top as usize * 2 + (rows.len().max(1) - 1) * line_h as usize + line_box)
+            .max(20);
         let mut canvas = vec![0u8; width * height * 4];
         for (ri, row) in rows.iter().enumerate() {
             let mut pen_x = 0i32;
+            let row_top = pad_top as i32 + (ri as i32) * line_h as i32;
             for (w, bmp, xmin, ymin, adv) in row {
                 for i in 0..bmp.len() {
                     let a = bmp[i];
@@ -255,7 +272,7 @@ impl PlayerCore {
                     let bx = xmin + (i % *w) as i32;
                     let by = ymin + (i / *w) as i32;
                     let cx = (pen_x + bx) as usize;
-                    let cy = (10.0 + ri as f32 * line_h + 46.0) as i64 + by as i64;
+                    let cy = (row_top + by) as i64;
                     if cx >= width || cy < 0 || cy as usize >= height {
                         continue;
                     }
@@ -486,13 +503,16 @@ impl ScenarioHost for PlayerCore {
         if !self.sprites.contains(&id) {
             self.sprites.push(id);
         }
+        let px = LOGICAL_W / 2.0 + x as f32 - iw as f32 / 2.0;
+        let py = LOGICAL_H - ih as f32 + y as f32;
+        eprintln!("[scenario] 立绘 {name}: tex={iw}x{ih} → ({px},{py}) fade={fade_ms}");
         let alpha = if fade_ms > 0 { 0.0 } else { 1.0 };
         let layer = Layer {
             id,
             z: 10,
             visible: true,
-            x: LOGICAL_W / 2.0 + x as f32 - iw as f32 / 2.0,
-            y: LOGICAL_H - ih as f32 + y as f32,
+            x: px,
+            y: py,
             scale_x: 1.0,
             scale_y: 1.0,
             alpha,
@@ -526,7 +546,9 @@ impl ScenarioHost for PlayerCore {
 
     fn show_text(&mut self, _line_id: Option<u32>, lt: &str, _le: &str) {
         self.show_window_frame();
-        let Some(rid) = self.render_text_layer(lt) else {
+        // 繁→简(显示层转换,不改剧本数据;fast2s 单字映射 + 词汇表)
+        let lt: String = fast2s::convert(lt);
+        let Some(rid) = self.render_text_layer(&lt) else {
             eprintln!("[scenario] 台词纹理生成失败");
             return;
         };
@@ -904,5 +926,28 @@ impl PlayerCore {
         }
         self.clear_choices();
         self.fade = None;
+    }
+}
+
+#[cfg(test)]
+mod text_metrics_tests {
+    //! 临时探针:实测字体 metrics(勿久留,验证后可删)。
+    use super::*;
+
+    #[test]
+    fn probe_stheiti_metrics() {
+        let bytes = load_cjk_font().expect("no cjk font");
+        let font = fontdue::Font::from_bytes(
+            bytes,
+            fontdue::FontSettings { collection_index: 0, scale: 40.0, load_substitutions: true },
+        )
+        .unwrap();
+        let hm = font.horizontal_line_metrics(40.0).expect("hm");
+        println!("HM ascent={} descent={} line_gap={}", hm.ascent, hm.descent, hm.line_gap);
+        for ch in ['猫', '渲', '。', '「', 'A'] {
+            let (m, _) = font.rasterize(ch, 40.0);
+            println!("'{ch}': width={} height={} xmin={} ymin={} adv={}",
+                m.width, m.height, m.xmin, m.ymin, m.advance_width);
+        }
     }
 }
