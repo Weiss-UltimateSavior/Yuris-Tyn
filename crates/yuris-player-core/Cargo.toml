@@ -30,3 +30,4 @@ bytemuck = { workspace = true }
 winit = { workspace = true }
 wgpu = { workspace = true }
 tracing = { workspace = true }
+fast2s = "0.3.1"
