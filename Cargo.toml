@@ -16,6 +16,7 @@ members = [
     "crates/yuris-save",
     "crates/yuris-scenario",
     "crates/yuris-tools",
+    "crates/yuris-player-core",
     "crates/yuris-cli",
 ]
 
