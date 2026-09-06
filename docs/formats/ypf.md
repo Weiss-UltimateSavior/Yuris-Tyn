@@ -9,6 +9,13 @@
 
 > ⚠️ 本规格在 **YPF version 500 / 引擎 555** 上验证。其他版本需重新校验，
 > 尤其是 `name_xor_key` 与 entry 尾部字段。
+>
+> **勘误（2026-09-06）**：本文最初的「单布局 + 名字遇首个 0x00 结束」描述
+> 不完整，两点已在实现侧修正并经第二样本（NEKO-NIN exHeart，E-ris 555）
+> 实证，见 §2.3/§2.4：
+> 1. **条目双布局**（se 型资源条目 = `name + 类型码 + NUL + …`）；
+> 2. **名字边界不可按「首个 0x00」朴素扫描**（SJIS 名的合法尾字节 0xC9
+>    与 name_key 异或后恰为存储态 0x00）。
 
 ---
 
@@ -88,6 +95,15 @@ fn decode_name(raw: &[u8], key: u8) -> String {
 }
 ```
 
+> **勘误（2026-09-06）**：上例只在名字本身不含「明文 0xC9」时成立。
+> SJIS 名的合法**尾字节 0xC9** 与 key 异或后恰为存储态 **0x00**
+> （第二样本实证：`se\グラスに氷.ogg` 的「に」= SJIS 0x82C9 → 存储 `4B 00`），
+> 朴素 cstring 扫描会在名字中途提前截断，索引逐条漂移。
+> 正确做法：对每个 0x00 候选做字段结构化校验
+> （se 型 stored 特征 `uncomp == comp` / bn 型 offset 落界），取首个通过者；
+> 全部失败再回退首个 NUL。实现见 `crates/yuris-format/src/ypf.rs`
+> `YpfIndex::from_path`（`name_boundary_valid`）。
+
 样本 key = **`0xC9`**。
 
 解码示例：
@@ -100,6 +116,19 @@ out:  24 79 73 62 69 6E 5C 79 73 74 30 30 30 33 34 2E 79 62 6E
 
       → "$ysbin\yst00034.ybn"
 ```
+
+### 2.2b 条目双布局与类型码（勘误补充，2026-09-06）
+
+同一包内**两种条目布局并存**（`update1.ypf` 首证，全包级普查确认）：
+
+- **bn 型**（脚本/文本条目）：`name + NUL + flag + uncomp + comp + off + zero + tail8`；
+  flag ∈ {0=stored, 1=zlib}；
+- **se 型**（资源条目 PNG/OGG/WAV）：`name + 类型码 + NUL + uncomp + comp + off + zero + tail8`；
+  类型码 XOR key 后在解码名尾部被 cstring 吞入，值 = 内容类型码
+  （**0x02=PNG（解码 0xCB）/ 0x06=OGG（解码 0xCF）/ 0x05=WAV（解码 0xCC）**，
+  WAV 为第二样本 se.ypf 实证补录）；数据 stored 明文。
+
+判别与名字边界处理见 §2.2 勘误注与 `YpfIndex::from_path`。
 
 ### 2.3 未知项：路径首字节
 
