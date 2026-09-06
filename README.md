@@ -68,7 +68,7 @@ Cargo workspace,17 个 crate 按层次划分:
 工具链:Rust (MSVC),edition 2021
 
 cargo build --workspace          # 构建
-cargo test --workspace           # 47 个测试套件
+cargo test --workspace           # 49 个测试套件
 
 # 运行(需要自备正版游戏,指向游戏安装目录):
 cargo run --release -p yuris-cli -- run "<游戏目录>"
@@ -91,7 +91,7 @@ cargo run --release -p yuris-cli -- run "<游戏目录>" --key-hex <8hex> --leni
 │   └── opcode/        #   指令编码表
 ├── scripts/           # Python 逆向/探针工具(格式侦查、trace 采集、对拍 diff)
 │   └── ghidra/        #   PyGhidra 自动化反编译脚本
-├── PROGRESS.md        # 开发进度日志(唯一进度真相来源:69 项成果、证据等级)
+├── PROGRESS.md        # 开发进度日志(唯一进度真相来源:71 项成果、证据等级)
 ├── Cargo.toml         # workspace 清单
 └── README.md
 ```
@@ -107,7 +107,7 @@ cargo run --release -p yuris-cli -- run "<游戏目录>" --key-hex <8hex> --leni
 | **Hypothesis** | 结构推断,禁止写进核心路径 |
 | **Unknown** | 显式 `unimplemented!()`,绝不猜测 |
 
-`PROGRESS.md` 完整记录了 69 项成果的推导过程、验证命令与历次勘误,
+`PROGRESS.md` 完整记录了 71 项成果的推导过程、验证命令与历次勘误,
 是理解本项目的最佳入口。
 
 ## 版权与免责声明
