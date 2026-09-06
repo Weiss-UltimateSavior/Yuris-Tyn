@@ -454,6 +454,33 @@ impl ScenarioPlayer {
                 self.wait = Some(Wait::Line);
                 true
             }
+            "GO" if modifiers.iter().any(|m| m == "IF") => {
+                // \GO.G.IF(槽, op, 值, 目标):全局槽比较跳转。
+                // 槽 n ≈ @50[n](Likely;\GO.G.IF 全局槽语义见 PROGRESS B5,
+                // 新游戏走末尾 \GO(SCENARIO_MAIN) 兜底,不影响首通)。
+                let slot = n(0).max(0) as usize;
+                let op = s(1);
+                let rhs = n(2);
+                let target = s(3).trim().to_string();
+                let cur = host.global(slot);
+                let hit = match op.as_str() {
+                    "==" => cur == rhs,
+                    "!=" => cur != rhs,
+                    ">=" => cur >= rhs,
+                    "<=" => cur <= rhs,
+                    ">" => cur > rhs,
+                    "<" => cur < rhs,
+                    _ => false,
+                };
+                host.log(&format!("GO.G.IF @[slot {slot}]={cur} {op} {rhs} → {} ", if hit { &target } else { "(不跳)" }));
+                if hit {
+                    match self.goto(&target) {
+                        Ok(()) => host.reset_scene(),
+                        Err(e) => host.log(&e),
+                    }
+                }
+                false
+            }
             "GO" => {
                 let label = s(0).trim().to_string();
                 match self.goto(&label) {

@@ -398,8 +398,13 @@ fn classify_param(raw: &str, line_no: usize) -> Result<Param, ScenarioError> {
             }),
         };
     }
-    if let Some(int) = parse_int(t) {
-        return Ok(Param::Int(int));
+    // 前导零数字("01"/"007")按裸词 Str 保留:YU-RIS 标签常带前导零
+    // (NEKO-NIN exHeart `\GO(01)` → 标签 `#01` 实证),Int 化会丢宽度
+    // 导致跳转目标 "1" 查无此标签。
+    if !(t.len() > 1 && t.trim_start_matches(['+', '-']).starts_with('0')) {
+        if let Some(int) = parse_int(t) {
+            return Ok(Param::Int(int));
+        }
     }
     if let Some(f) = parse_float(t) {
         return Ok(Param::Float(f));

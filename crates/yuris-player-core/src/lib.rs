@@ -39,6 +39,10 @@ pub fn load_cjk_font() -> Option<Vec<u8>> {
         "/System/Library/Fonts/Supplemental/Songti.ttc",
         "/System/Library/Fonts/PingFang.ttc",
         "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        // Android(系统 Noto CJK;TC 优先 —— 语料为繁中)
+        "/system/fonts/NotoSansTC-Regular.otf",
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+        "/system/fonts/NotoSansSC-Regular.otf",
         // Linux(Noto CJK 常见路径)
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
@@ -242,10 +246,22 @@ impl PlayerCore {
             ));
         }
         let width = (*row_w.iter().max().unwrap_or(&0)).clamp(60, max_w as i32) as usize;
-        let height = (line_h * rows.len() as f32 + 16.0) as usize;
+        // 基线/高度按字体真实 metrics 计算(NEKO 实测:CJK 下沉部分曾被
+        // 写死的 +46 基线与 line_h*rows+16 高度裁掉 —— 「文字只显示一半」)。
+        // fontdue:horizontal_line_metrics(px) → Option{ascent, descent, line_gap}
+        let (ascent, descent) = match self.font.horizontal_line_metrics(px) {
+            Some(hm) => (hm.ascent, hm.descent.min(0.0)),
+            None => (px * 0.9, -px * 0.15),
+        };
+        let pad_top = 6.0f32;
+        let baseline0 = pad_top + ascent;
+        let height = (baseline0 + (rows.len().max(1) - 1) as f32 * line_h - descent + 8.0)
+            .ceil()
+            .max(20.0) as usize;
         let mut canvas = vec![0u8; width * height * 4];
         for (ri, row) in rows.iter().enumerate() {
             let mut pen_x = 0i32;
+            let baseline_ri = baseline0 + ri as f32 * line_h;
             for (w, bmp, xmin, ymin, adv) in row {
                 for i in 0..bmp.len() {
                     let a = bmp[i];
@@ -255,7 +271,7 @@ impl PlayerCore {
                     let bx = xmin + (i % *w) as i32;
                     let by = ymin + (i / *w) as i32;
                     let cx = (pen_x + bx) as usize;
-                    let cy = (10.0 + ri as f32 * line_h + 46.0) as i64 + by as i64;
+                    let cy = (baseline_ri + by as f32) as i64;
                     if cx >= width || cy < 0 || cy as usize >= height {
                         continue;
                     }
