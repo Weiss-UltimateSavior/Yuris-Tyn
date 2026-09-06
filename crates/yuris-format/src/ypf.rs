@@ -313,7 +313,31 @@ impl YpfIndex {
         let mut map: std::collections::HashMap<Vec<u8>, usize> =
             std::collections::HashMap::with_capacity(file_count as usize);
         for _ in 0..file_count {
-            let mut name_bytes = decode_xor_cstring(r.rest(), name_key);
+            // ---- 名字边界:NUL 候选结构化验证 ----
+            // cstring 扫描假设名字不含存储态 0x00,但 SJIS 名的合法尾字节
+            // 0xC9 与 name_key 异或后恰为 0x00(如「に」= 0x82C9,NEKO-NIN
+            // exHeart se.ypf 实证),会在名字中途提前命中 NUL → 整包解析
+            // 漂移。因此对 rest 内每个 0x00 候选做字段结构校验
+            // (stored 特征 uncomp==comp / bn 边界落界),取首个通过者;
+            // 全部失败时回退首个 NUL(维持旧行为)。
+            let rest = r.rest();
+            let base = r.pos();
+            let mut nul_rel: Option<usize> = None;
+            let mut scan = 0usize;
+            while let Some(rel) = rest[scan..].iter().position(|&b| b == 0) {
+                let cand = scan + rel;
+                let np = base + cand + 1;
+                let name = decode_xor_cstring(&rest[..cand], name_key);
+                if name_boundary_valid(&block, np, name.as_slice(), file_len, first_data_off) {
+                    nul_rel = Some(cand);
+                    break;
+                }
+                scan = cand + 1;
+            }
+            let cand = nul_rel.unwrap_or_else(|| {
+                rest.iter().position(|&b| b == 0).unwrap_or(rest.len())
+            });
+            let mut name_bytes = decode_xor_cstring(&rest[..cand], name_key);
             let raw_len = name_bytes.len();
             let np = r.pos() + raw_len + 1; // 名字(根前缀+路径+可能尾缀码) + NUL 后
             r.skip(raw_len + 1)?;
@@ -328,7 +352,9 @@ impl YpfIndex {
             // YpfArchive 分区解析器」双巧合掩盖,sc_zlib_text_read 暴露)。
             let tail = name_bytes.last().copied();
             let code = match tail {
-                Some(t) if t == 0xCB || t == 0xCF => Some(t),
+                // 0xCB=PNG(存储 0x02) / 0xCF=OGG(存储 0x06) / 0xCC=WAV
+                // (存储 0x05;NEKO-NIN exHeart se.ypf 实证,.wav 条目)
+                Some(t) if t == 0xCB || t == 0xCF || t == 0xCC => Some(t),
                 _ => None,
             };
             let is_bn = if code.is_none() {
@@ -397,6 +423,46 @@ impl YpfIndex {
             map,
         })
     }
+}
+
+/// NUL 候选结构化校验(名字边界消歧)。
+///
+/// `np` = 假定 NUL 之后的字段起点,`name` = 该候选下 XOR 解码的名字。
+/// 通过条件(满足其一):
+/// - **se 型**:名字尾为类型码(解码 0xCB/0xCF/0xCC)且 uncomp/comp 字段
+///   落在索引块内 —— stored 特征 `uncomp == comp`(PNG/OGG/WAV 全部明文
+///   等长,NEKO-NIN exHeart 全包实证)再验 offset 落在文件范围;
+/// - **bn 型**:NUL 后首字节 ∈ {0,1}(flag)且 offset ≥ first_data_off、
+///   offset+comp ≤ 文件长(与主判别一致)。
+/// - 其余形态:不通过(交由上层继续尝试下一候选/回退首个 NUL)。
+fn name_boundary_valid(
+    block: &[u8],
+    np: usize,
+    name: &[u8],
+    file_len: u32,
+    first_data_off: u32,
+) -> bool {
+    let tail = name.last().copied();
+    if let Some(t) = tail {
+        if t == 0xCB || t == 0xCF || t == 0xCC {
+            let Some(b) = block.get(np..np + 8) else {
+                return false;
+            };
+            let uncomp = u32::from_le_bytes(b[0..4].try_into().unwrap());
+            let comp = u32::from_le_bytes(b[4..8].try_into().unwrap());
+            return uncomp == comp && comp > 0;
+        }
+    }
+    let b0 = block.get(np).copied().unwrap_or(0xFF);
+    if b0 <= 1 {
+        let Some(b) = block.get(np + 1..np + 17) else {
+            return false;
+        };
+        let comp = u32::from_le_bytes(b[4..8].try_into().unwrap());
+        let off = u32::from_le_bytes(b[8..12].try_into().unwrap());
+        return off >= first_data_off && off.saturating_add(comp) <= file_len;
+    }
+    false
 }
 
 /// seek 式单包读取器(P6.3,成果 64):`File` + [`YpfIndex`],按需随机读取。
