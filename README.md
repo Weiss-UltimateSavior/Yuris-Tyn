@@ -73,6 +73,9 @@ cargo test --workspace           # 47 个测试套件
 cargo run --release -p yuris-cli -- run "<游戏目录>"
 # 调试跳转到指定剧本标签:
 cargo run --release -p yuris-cli -- run "<游戏目录>" --at "maho2_22"
+# 调试项:YSTB 4 字节 XOR key(不同游戏各异;正式路径 = yuris ystb guess-key)
+#        + 非 strict 模式(Unsupported 命令记录后继续)
+cargo run --release -p yuris-cli -- run "<游戏目录>" --key-hex <8hex> --lenient
 ```
 
 操作:点击推进对话 / 选择肢;F5 快速存档,F9 快速读档,Esc 退出。
