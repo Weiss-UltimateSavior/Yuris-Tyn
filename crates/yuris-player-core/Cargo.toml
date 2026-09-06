@@ -1,10 +1,10 @@
 [package]
-name = "yuris-cli"
+name = "yuris-player-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "播放器入口。"
+description = "平台无关播放器核心:PlayerCore/Player/scenario 播放器/音频(桌面壳与 Android 壳共用)。"
 
 [dependencies]
 yuris-core = { workspace = true }
@@ -21,15 +21,12 @@ serde_json = { workspace = true }
 yuris-scenario = { workspace = true }
 encoding_rs = "0.8"
 yuris-runtime = { workspace = true }
-yuris-player-core = { path = "../yuris-player-core" }
 yuris-render = { workspace = true }
 yuris-audio = { workspace = true }
 yuris-input = { workspace = true }
 yuris-save = { workspace = true }
 anyhow = { workspace = true }
-clap = { workspace = true }
 bytemuck = { workspace = true }
 winit = { workspace = true }
 wgpu = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }

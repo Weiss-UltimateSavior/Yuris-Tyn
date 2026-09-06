@@ -3955,6 +3955,7 @@ dependencies = [
  "yuris-core",
  "yuris-format",
  "yuris-input",
+ "yuris-player-core",
  "yuris-render",
  "yuris-resource",
  "yuris-runtime",
@@ -4004,6 +4005,35 @@ dependencies = [
  "tracing",
  "yuris-core",
  "yuris-runtime",
+]
+
+[[package]]
+name = "yuris-player-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "encoding_rs",
+ "fontdue",
+ "image",
+ "rodio",
+ "serde",
+ "serde_json",
+ "tracing",
+ "wgpu",
+ "winit",
+ "yuris-audio",
+ "yuris-core",
+ "yuris-format",
+ "yuris-input",
+ "yuris-render",
+ "yuris-resource",
+ "yuris-runtime",
+ "yuris-save",
+ "yuris-scenario",
+ "yuris-scene",
+ "yuris-value",
+ "yuris-vm",
 ]
 
 [[package]]
