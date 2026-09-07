@@ -2082,8 +2082,11 @@ impl GroupVm {
                                     let start_ch = pos_ch.saturating_sub(1);
                                     let start = varact_char_to_byte(&obj, start_ch)
                                         .ok_or_else(|| {
+                                            let pc = self.pc;
+                                            let blen = bytes.len();
+                                            let sid = self.ctx.script_id;
                                             Error::format(format!(
-                                                "VARACT 槽 {slot} POS={pos_ch} 越界(引擎 0x1d4ca 同族)"
+                                                "VARACT 槽 {slot} POS={pos_ch} 越界(引擎 0x1d4ca 同族; s{sid} pc={pc} 串字节={blen} ops={ops:?})"
                                             ))
                                         })?;
                                     let end = varact_char_to_byte(&obj, start_ch + len_ch)
