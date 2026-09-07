@@ -2947,6 +2947,45 @@ NEKO 剧本存在 `#=TR_2A` 标签行(与其余 `#TAM01` 并存);docs/opcode/opc
 
 ***
 
+## 2026-09-08 — 精灵淡入动画未接线修复:厂商 LOGO/注意事项页/立绘不可见(成果 72)
+
+### 成果 72:sprite_fades 动画驱动缺失 —— **Confirmed(实测)**
+
+#### 根因
+
+- `yuris-player-core` 的 `update_sprite_fades()`(lib.rs)定义后**从未被任何
+  tick 调用**;tick 循环只接了背景黑场的 `update_fade()`。
+- `\S(logo, item/logo_wp, 1100,…)` 的 `fade_ms>0` 路径把图层 `alpha` 初始为
+  **0.0** 并登记 `sprite_fades` → 动画永不推进 → **厂商 LOGO/注意事项页
+  (item/attention_1)/一切带淡入的 \S 与 \T 图层卡在 alpha=0 永不可见**。
+- 外观:LOGO 段 WA 等待正常流逝,但视觉空转——白屏 ~9s → 黑 → 标题,
+  「厂商 LOGO → fade」全程无画面。
+
+#### 修复
+
+- `Player::tick` 在 `update_fade()` 后接入 `core.update_sprite_fades()`
+  (yuris-player-core/src/lib.rs)。一行接线;行为面:sprite_fades(精灵淡入/
+  淡出)与 update_fade(背景黑场)两条动画时钟从此并行推进。
+
+#### 验证(可复现)
+
+- `cargo build --release -p yuris-cli && target/release/yuris-cli run
+  "AnimalTrailGirlishSquare 2"`。
+- **无点击**启动 → 标题实测 **14s**,与剧本时序逐项吻合:FIN 0.5 + logo 淡入
+  1.1/停 3/淡出 0.8 + attention 淡入 1/停 3/淡出 0.8 + FOUT 0.8 + WA 0.5×2
+  ≈ 13.5s(scenario_start.txt LOGO 段全序列)。
+- 日志零「资源未命中」:item/logo_wp、item/attention_1 均解析命中。
+- 点击语义实测:单次 MOUSE_L 仅跳过一个 WA/Fading 等待(连点 6s 内到标题即
+  此机制,与真机「点击跳过」一致,非缺陷)。
+
+### 关联
+
+- CONTEXT.md 同日建立(全项目唯一术语表;YSER=错误消息池定性同步 README,
+  勘正 README 旧称「资源条目表」)。
+- 本次为接线遗漏,非逆向结论变更,结论汇总表不变。
+
+***
+
 ## 更新约定
 
 每次更新本文件时：

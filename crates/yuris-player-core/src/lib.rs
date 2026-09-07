@@ -819,6 +819,7 @@ impl Player {
         core.drive_vm();
         core.consume_events();
         core.update_fade();
+        core.update_sprite_fades();
         let clicked = std::mem::take(&mut core.clicked);
         self.scenario.tick(core, clicked);
         if core.key_pulse {
