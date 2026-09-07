@@ -26,8 +26,16 @@
 
 3 窗:`pushint8 1`(B0=0x0D → LENGTH=13)/引用 `$0x37[1]`(STR 数组元素)/
 `pushvar @0x188e`。即 **LENGTH 查询**:`$0x37`(STR 数组,YSVR 17 元素)取
-下标 1 元素的字符串字节长度(Likely:字节数;引擎用 `DAT_0059b0c0` 逐字符
-步进,SJIS 双字节按 2 计 → **字节长度,非字符数**)。
+下标 1 元素的字符串**字符数**(汇编终证 2026-09-08,见 §5)。
+
+## 3b. script190 g31→g36 实链(LENGTH 消费点,2026-09-08 破案链)
+
+- g31 VARINFO:`LENGTH($55[1])` → `@6293`($55[1] = 系统按钮请求路径串,
+  如 `config/sound_3/btn_01`+SJIS名+`_bt4`,37B/31 字符)。
+- g36 VARACT COPY:`POS = @6293−@6292+1`、`LENGTH = @6292`(=@53[2]=5)
+  → **「取串尾 LENGTH 个字符」惯用法**;尾缀用于按钮命名派生。
+- 本实现曾把 LENGTH 实现为字节数(37)→ POS=33 > 31 字符 → 每帧
+  0x1d4ca 同族报错,系统脚本链停摆(known-issues 问题 1,成果 73 结案)。
 
 ## 4. 落地边界(铁律)
 
@@ -38,8 +46,32 @@
 - `0x67` 的 a2/a3… 分支内对 INT/FLT 槽的"调试写入"
   (`DAT_005ca920/DAT_005ca8a0`)是临时调试信息,非变量存储 —— 不实现。
 
-## 5. 未解(Unknown)
+## 5. LENGTH 语义终证(2026-09-08 汇编,推翻旧「Likely 字节数」)
+
+**CMDH_004550a0 LENGTH-on-STR 分支(0x4551dc-0x455208)逐指令:**
+
+```asm
+4551dc: xorl  %eax,%eax          ; count = 0 ← 结果寄存器
+4551de: xorl  %esi,%esi          ; off = 0(仅步进用)
+4551e0: movzbl (%esi,%edi),%ecx  ; ch = str[off]
+4551e4: movzbl 0x59b0c0(%ecx),%ecx
+4551eb: incl  %ecx               ; step = 宽度表+1
+4551ef: cmp $2,%ecx / jne 4551f5
+4551f4: incl %esi                ; 双字节:额外跳 1 字节
+4551f5: incl %eax                ; count++(每字符恰 +1)
+4551f6: incl %esi
+4551f7: cmpl %edx,%esi / jl 4551e0   ; off < strlen(仅边界)
+4551fb: cltd; mov %eax,0x8(%esp)     ; 结果 = count(64 位)
+455208: calll 0x45baf8               ; push 字符数
+```
+
+- strlen(edx) 只作**循环边界**;真正入栈的是 EAX **字符计数器**。
+- 即 **LENGTH = 字符数**(SJIS 双字节按 1 计),非字节数。
+- 连带定性:VARACT 守卫 0x1d4ca/0x1d4d4 在真引擎为**致命错误**
+  (`FUN_0046bea4(x,1)` → `DAT_008725dc=1` → 主循环调 FUN_00410de4 →
+  WM_CLOSE 退出),非可恢复跳过 → 真引擎从不命中该守卫。
+
+## 6. 未解(Unknown)
 
 - 各写回槽的引擎写回目标(变量存储区 vs 临时缓冲)。
 - `es._strlen` 等 GOSUB 封装的调用约定细节。
-- LENGTH 精确语义:字节数 vs 字符数(Likely 字节,按步进表)。

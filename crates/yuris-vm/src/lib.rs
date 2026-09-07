@@ -2085,8 +2085,14 @@ impl GroupVm {
                                             let pc = self.pc;
                                             let blen = bytes.len();
                                             let sid = self.ctx.script_id;
+                                            let hex: String = bytes
+                                                .iter()
+                                                .take(48)
+                                                .map(|b| format!("{b:02x}"))
+                                                .collect::<Vec<_>>()
+                                                .join(" ");
                                             Error::format(format!(
-                                                "VARACT 槽 {slot} POS={pos_ch} 越界(引擎 0x1d4ca 同族; s{sid} pc={pc} 串字节={blen} ops={ops:?})"
+                                                "VARACT 槽 {slot} POS={pos_ch} 越界(引擎 0x1d4ca 同族; s{sid} pc={pc} 目标={target:?} 串字节={blen} ops={ops:?} hex={hex})"
                                             ))
                                         })?;
                                     let end = varact_char_to_byte(&obj, start_ch + len_ch)
@@ -4081,11 +4087,12 @@ impl GroupVm {
         };
         match query {
             None => {
-                // 引擎 fallback:SET 变量 type==3 → 串字节长;否则报错 0x1a6bc
+                // 引擎 fallback:SET 变量 type==3 → 串**字符数**(LENGTH 同源,
+                // 0x4551dc 步进计数终证);否则报错 0x1a6bc
                 let v = self.read_var_target(target)?;
                 match v {
                     Value::Str(bytes) => {
-                        let n = sjis_byte_len(&bytes);
+                        let n = sjis_char_len(&bytes);
                         evaluated.push((13u8, format!("LENGTH(fallback)={n}")));
                         Ok(Some(Value::Int(n as i64)))
                     }
@@ -4146,11 +4153,14 @@ impl GroupVm {
                 Ok(Some(Value::Int(n)))
             }
             Some(13) => {
-                // LENGTH:SET 串的 SJIS 字节长(引擎 0x59b0c0 步进表 = 字节计)
+                // LENGTH:SET 串的 SJIS **字符数**(汇编终证 0x4551dc-0x455208:
+                // strlen 只作循环边界,入栈结果 = 宽度表步进的 EAX 计数器;
+                // 旧「字节数」解读被证伪 —— 它曾使 s190 pc=36 的
+                // POS=LEN−4+1 落到越界值)
                 let v = self.read_var_target(target)?;
                 match v {
                     Value::Str(bytes) => {
-                        let n = sjis_byte_len(&bytes);
+                        let n = sjis_char_len(&bytes);
                         evaluated.push((13u8, format!("LENGTH={n}")));
                         Ok(Some(Value::Int(n as i64)))
                     }
@@ -4166,9 +4176,22 @@ impl GroupVm {
     }
 }
 
-/// SJIS 字节长(引擎 0x59b0c0 步进表语义:双字节首区 0x81-0x9F/0xE0-0xEF 计 2)。
-fn sjis_byte_len(bytes: &[u8]) -> usize {
-    bytes.len()
+/// SJIS 字符数(VARINFO LENGTH 汇编终证 0x4551dc-0x455208:strlen 只作循环
+/// 边界,入栈结果 = 宽度表步进循环的 EAX 计数器 —— 每字符恰 +1,双字节
+/// 首区额外跳 1 字节。即 LENGTH = 字符数,非字节数)。
+fn sjis_char_len(bytes: &[u8]) -> usize {
+    let mut off = 0usize;
+    let mut n = 0usize;
+    while off < bytes.len() {
+        let b = bytes[off];
+        off += if (0x81..=0x9F).contains(&b) || (0xE0..=0xEF).contains(&b) {
+            2
+        } else {
+            1
+        };
+        n += 1;
+    }
+    n
 }
 
 /// VARACT UPPER/LOWER 的 SJIS 感知 ASCII 大小写转换

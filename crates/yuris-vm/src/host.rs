@@ -295,13 +295,26 @@ impl PacFileIndex {
     /// 解析 FILE 参数 → (包路径, 条目)。候选 = 原/归一路径 +
     /// {.png,.jpg,.bmp,.gif}(`image_dims` 文档),再退 basename 前缀模糊。
     /// `png_only` = 限定 stored PNG(尺寸查询用);内容读取放宽。
+    ///
+    /// `_N` 变体剥离回退(2026-09-08,成果 74;**Likely** —— 引擎侧解析
+    /// 代码未在反编译子集内,以下为脚本↔封包对拍拟合):
+    /// 系统剧本(sid 253/254 es.BT.CG.SET)以字面量请求
+    /// `config/sound_2/tip_cgauge`、`config/back_sound_2`、
+    /// `config/btn_tab_sound_2_on` 等形态,而 cgsys_ec.ypf 只实存
+    /// `cgsys\config\sound\tip_cgauge.png`、`back_sound_.png`、
+    /// `btn_tab_sound_on.png`(剥 `_2` 形态,6+ 例全中,0 反例)→ 引擎
+    /// VFS 命中失败时按「从右向左逐层剥离 `_单数字` token」回退。
+    /// 双位数(`_08`)不剥(防 btn_page08_over 误伤);真缺失文件
+    /// (btn_all_mask、btn_c01~16_bt4、other/*、btn_35〈日文〉_bt4、
+    /// tip_mes_preview_1..3 —— 全 12 包字节级检索终证不存在)剥离后
+    /// 依旧未命中,与引擎同表现(按钮空图,不阻断)。
     fn resolve_entry(&self, path: &str, _png_only: bool) -> Option<(&std::path::PathBuf, &yuris_format::ypf::YpfEntryInfo)> {
         let norm = path.replace('/', "\\");
-        let mut cands: Vec<Vec<u8>> = vec![
-            path.as_bytes().to_vec(),
-            norm.as_bytes().to_vec(),
-        ];
-        for base in [path, norm.as_str()] {
+        let mut bases: Vec<String> = vec![path.to_string(), norm.clone()];
+        bases.extend(Self::variant_strips(&norm));
+        let mut cands: Vec<Vec<u8>> = Vec::with_capacity(bases.len() * 6);
+        for base in &bases {
+            cands.push(base.as_bytes().to_vec());
             for ext in [".png", ".jpg", ".bmp", ".gif"] {
                 cands.push(format!("{base}{ext}").into_bytes());
             }
@@ -313,6 +326,37 @@ impl PacFileIndex {
             .or_else(|| self.fuzzy_lookup(&norm))?;
         let (pack_path, index) = &self.packs[pi];
         Some((pack_path, &index.entries[ei]))
+    }
+
+    /// `_N` 变体剥离:从最右的「_单数字」(其后不是数字)起逐层剥除,
+    /// 返回剥离序列(右→左)。例:
+    /// `config\btn_tab_sound_2_on` → [`config\btn_tab_sound_on`];
+    /// `config\sound_2\tip_cgauge` → [`config\sound\tip_cgauge`];
+    /// `config\back_sound_2` → [`config\back_sound_`]。
+    fn variant_strips(norm: &str) -> Vec<String> {
+        let b = norm.as_bytes();
+        let mut cuts: Vec<usize> = Vec::new();
+        let mut i = 0usize;
+        while i + 1 < b.len() {
+            if b[i] == b'_'
+                && b[i + 1].is_ascii_digit()
+                && (i + 2 >= b.len() || !b[i + 2].is_ascii_digit())
+            {
+                cuts.push(i);
+                i += 2;
+            } else {
+                i += 1;
+            }
+        }
+        let mut out = Vec::with_capacity(cuts.len());
+        let mut cur = norm.to_string();
+        for &c in cuts.iter().rev() {
+            // 右→左剥离,左侧下标不受影响
+            cur.remove(c);
+            cur.remove(c); // 数字位(剥 '_' 后原 i+1 左移为 c)
+            out.push(cur.clone());
+        }
+        out
     }
 
     /// 读 FILE 参数指向的图像**内容**(播放器渲染用;P8 集成)。

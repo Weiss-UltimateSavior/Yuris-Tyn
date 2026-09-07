@@ -97,7 +97,7 @@ def decode_expr(content, off, ln):
 
 
 def main():
-    ypf = r"D:\yuris-kernel\AnimalTrailGirlishSquare 2\pac\bn.ypf"
+    ypf = "/Users/weiss/Desktop/yuris/AnimalTrailGirlishSquare 2/pac/bn.ypf"
     script_id = int(sys.argv[1]) if len(sys.argv) > 1 else 190
     lo = int(sys.argv[2]) if len(sys.argv) > 2 else 25
     hi = int(sys.argv[3]) if len(sys.argv) > 3 else 42

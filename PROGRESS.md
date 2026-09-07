@@ -1205,8 +1205,12 @@ LAB\_00453178/LAB\_004550a0 来自 FUN\_0046305c 命令表,下标换算 slot=ind
 | VM      | 变量系统                                  | **Confirmed(寻址)/Likely(声明消费)**         | 变量空间=声明命令 id、元素 8B、描述符 byte+1=类型；声明组=加载期数据                                   |
 | VM      | YSVR kind 语义                          | **Confirmed**                          | FUN\_00451348:1=全局(全量)/2=按脚本(script 匹配)/3=死数据不应用（成果 44）                      |
 | VM      | LET 左值窗形态                             | **Confirmed**                          | 0x48=推值、0x56=引用标记；基点=首条 var 指令；6836/6836 窗 0x56 起头（成果 44 勘误）                 |
-| VM      | VARACT CUT/COPY/POS/LENGTH            | **Confirmed(结构)/Likely(越界近似)**         | 字符区间 \[POS-1,POS-1+LENGTH) SJIS 步进；空串→空串不报错（成果 44）                           |
+| VM      | VARACT CUT/COPY/POS/LENGTH            | **Confirmed**                          | 字符区间 \[POS-1,POS-1+LENGTH) SJIS 步进;POS=1 基字符序数;空串→空串不报错;守卫 0x1d4ca/d4 在引擎为致命退出(成果 73)  |
+| VM      | VARINFO LENGTH-on-STR = 字符数           | **Confirmed(汇编)**                     | 0x4551dc 步进循环 EAX 计数器入栈,strlen 仅循环界;曾误判字节数致 s190 pc=36 停摆(成果 73)                          |
 | Runtime | Scene / Layer 模型                      | **Unknown**                            | 有 YSCM 参数名线索（SX/SY/RLX/RLY…）                                                 |
+| 资源      | UI 素材 `_N` 变体剥离回退                   | **Likely(对拍)**                        | 系统剧本字面量 `sound_2/tip_cgauge` 等 ↔ 包内 `sound\tip_cgauge.png` 剥 `_N` 6+ 例全中;resolve_entry 已落地(成果 74) |
+| 资源      | cgsys_ec.ypf 名字首字节(0x10~0x3B)       | Unknown                                | 盘上名字自带,非解析漂移/非名字哈希;可打印时即「前导杂字节」;查找由剥根双索引免疫(成果 74)               |
+| 资源      | config 系 UI 按钮 btn_all_mask/btn_c01~16/other/* 真缺失 | **Confirmed(字节级)**                | 12 包 XOR-0xC9 检索不存在;引擎同表现空按钮,非分歧(成果 74)                          |
 | Runtime | 免封包优先级                                | **Confirmed（机制）**                      | YSCM 含 `FILEPRIORITY*` 键                                                     |
 | 资源      | 图片格式                                  | **Likely**                             | YSCM 含 `BMP PNG JPG GIF AVI PSB WEBP`                                        |
 | 资源      | 音频格式                                  | **Likely**                             | YSCM 含 `WAV OGG`                                                             |
@@ -2983,6 +2987,132 @@ NEKO 剧本存在 `#=TR_2A` 标签行(与其余 `#TAM01` 并存);docs/opcode/opc
 - CONTEXT.md 同日建立(全项目唯一术语表;YSER=错误消息池定性同步 README,
   勘正 README 旧称「资源条目表」)。
 - 本次为接线遗漏,非逆向结论变更,结论汇总表不变。
+
+***
+
+## 2026-09-08 VARACT 停摆破案 — VARINFO LENGTH=字符数 终证 + VM 越过 s190 pc=36(成果 73)
+
+### 成果 73:VARINFO LENGTH-on-STR 语义勘误(字节→字符)—— **Confirmed(汇编+实测)**
+
+#### 现象与立案
+
+- s190 pc=36(VARACT COPY)POS 越界报错每帧重试,33 分钟会话 12.2 万条,
+  系统 UI 脚本链永久停摆(docs/known-issues.md 问题 1)。
+- 补 sid/pc 上下文后钉实单点:s190 pc=36,`POS=串字节−4,LENGTH=5`,
+  曾呈「取串尾 5 字节」算术闭合 → H2(字节偏移语义)假说一度强支持。
+
+#### 终证过程(三层证据链)
+
+1. **VARACT 守卫反编译复核**(CMDH_00453178 COPY 分支):步进循环
+   `off += DAT_0059b0c0[ch]+1` 按字符宽度表走 POS−1 次,越界才报错
+   0x1d4ca → **POS=1 基字符序数、LENGTH=字符数**。H2(字节偏移)证伪 ——
+   「POS=串字节−4」闭合纯系 ASCII 串字节≈字符的巧合。
+2. **引擎可恢复性证伪**(H3):`FUN_0046bea4(0x1d4ca,1)` →
+   `FUN_0046befc` 末尾 `DAT_008725dc=1`(与 WM_CLOSE 处理器 FUN_00410de4
+   同一标志)→ 帧驱动 FUN_00404164 返回 1 → 主循环 FUN_00403bec 调
+   FUN_00410de4 → 引擎退出。**该守卫在真引擎是致命错误**,真引擎从未命中
+   → 引擎侧 LENGTH 查询值必然使 POS 合法。
+3. **VARINFO LENGTH 汇编终证**(0x4551dc-0x455208):strlen 只作循环边界,
+   入栈结果 = 宽度表步进循环的 EAX 计数器(每字符恰 +1,双字节首区额外跳
+   1 字节)→ **LENGTH-on-STR = 字符数,非字节数**。推翻 varact_varinfo.md
+   旧「Likely 字节数」。
+
+#### 根因
+
+- 实测 hex 取证:失败串 = `config/sound_3/btn_01` + SJIS「ブルードラゴ」
+  + `_bt4`(37 字节 / 31 字符,即问题 2 的 UI 请求路径;s190 pc=36 在提取
+  按钮资源名尾缀做命名派生)。
+- 本实现 VARINFO 槽 13(LENGTH)返回 `sjis_byte_len`=37 → 脚本
+  POS=LEN−LENGTH+1=33 > 31 字符 → 字符步进越界。
+- 引擎 LENGTH=31 → POS=27,取尾 5 字符「ゴ_bt4」,永不越界。
+
+#### 修复
+
+- `exec_varinfo_query` 槽 13 与 fallback 改用新增 `sjis_char_len()`
+  (yuris-vm/src/lib.rs,步进计数与引擎 0x4551dc 循环逐指令同构);
+  删除失途的 `sjis_byte_len`。
+- VARACT POS 越界报错补 `目标`(SET 引用变量)与 obj 串 hex 转储
+  (本次破案的决定性取证手段,留作回归诊断)。
+
+#### 验证(可复现)
+
+- `cargo build --release -p yuris-cli && target/release/yuris-cli run
+  "AnimalTrailGirlishSquare 2"`(100 秒窗口)。
+- VARACT 错误 **0 条**(修复前同窗口 10,124 条);全日志 **0 错误**。
+- VM 越过 s190 pc=36,系统 UI 链整体复活:设置页/音量/标签页等控件
+  请求序列大量出现(tip_cgauge、btn_votest、btn_tab_system 等 —— 即
+  问题 2 的素材请求,其失败为独立未决问题,不变)。
+- 游戏推进到标题画面,主流程不受影响。
+
+### 关联
+
+- known-issues.md 问题 1 结案(1.5 排查计划第 2-4 步由本次终证一并完成;
+  H1 上游状态分歧证伪 —— 变量内容与引擎一致,分歧在 LENGTH 语义)。
+- varact_varinfo.md §3/§5 LENGTH 语义同步勘误。
+- 结论汇总表:VARACT 行等级更新,新增 VARINFO LENGTH 行。
+- 问题 2(UI 素材路径派生)仍开放 —— pc=36 的尾缀提取逻辑现已可执行,
+  为其逆向提供了可单步观测的运行时。
+
+***
+
+## 2026-09-08 UI 素材路径破案(一) — `_N` 变体剥离回退 + C 类真缺失字节级终证(成果 74)
+
+### 成果 74:resolve_entry `_N` 变体剥离回退 —— **Likely(脚本↔封包对拍拟合,引擎侧代码未取证)**
+
+VM 越过 s190 pc=36(成果 73)后,系统 UI 链复活的素材请求全面暴露。
+本轮解决其中「请求形态 ≠ 包内形态」的可解子集。
+
+#### 破案过程(三层证据)
+
+1. **请求源实证**:sid 253/254 系统剧本(YSTB content 原文)以字面量
+   `config/sound_2/tip_cgauge`、`config/back_sound_2`、
+   `config/btn_tab_sound_2_bt3` 下发 `es.BT.CG.SET`(`M<长度>` 参数窗
+   原样可见);`cgsys/` 前缀为 es.BT 子程序运行期字符串拼接(VARACT),
+   即**引擎 VFS 收到的就是带 `_2/_3` 的路径**。
+2. **封包对照**(鲁棒 YpfIndex 全量 + 字节级 XOR-0xC9 检索):
+   `sound_2/tip_cgauge` ↔ 实存 `cgsys\config\sound\tip_cgauge.png`;
+   `back_sound_2` ↔ `back_sound_.png`(尾下划线);
+   `btn_tab_sound_2_on/_2_bt3` ↔ `btn_tab_sound_on/_bt3.png` ——
+   剥 `_N` 形态 **6+ 例全中、0 反例** → 引擎 VFS 未命中时按
+   「从右向左逐层剥离 `_单数字` token」回退(**Likely**;引擎解析代码
+   不在反编译子集,无法升 Confirmed)。双位数不剥(`_08` 防
+   btn_page08_over 误伤)。
+3. **C 类真缺失终证**:12 包原始字节 XOR-0xC9 检索,
+   `btn_all_mask`、`btn_c01~c16_bt4`、`other/*`(btn_check/btn_show)、
+   `back_other`、`btn_tab_other_on`、`sound_3/btn_01~65〈日文〉_bt4`、
+   `text/tip_mes_preview_1..3`(包内仅 `_4`)**全部不存在** → 引擎
+   同样命中失败,按钮空图为引擎原生表现,不再是本实现的分歧点。
+
+#### 代码落点
+
+- `yuris-vm/src/host.rs` `resolve_entry`:候选链 = 精确(原/归一+扩展名)
+  → `_N` 剥离变体逐层+扩展名 → basename 前缀模糊(原链不变,纯增量,
+  零回归面)。`read_image_bytes`/`read_cg_bytes`/`read_stored_bytes`
+  共用此入口,一并生效。
+- 顺带查清 **cgsys_ec.ypf 名字首字节现象**(known-issues 2.4 遗留):
+  原始索引区 dump 证实每条名字盘上自带 1 个额外字节(0x10~0x3B),
+  可打印时即「前导杂字节」(`(cgsys` 等);非解析漂移、非名字哈希
+  (fnv/djb2/sdbm/crc32 全不中)——**语义 Unknown**;查找已被
+  YpfIndex 剥根双索引(name[1..])免疫,不阻断。
+
+#### 验证(可复现)
+
+- `cargo build --release -p yuris-cli && target/release/yuris-cli run
+  "AnimalTrailGirlishSquare 2"`(32 秒窗口)。
+- CG 解析失败 **208 → 151 条**;可解族全部消失:tip_cgauge×32、
+  btn_votest/sysvoice/cslider/cmute×16 族、back_sound_2/3、
+  btn_tab_system/sound/text _1/_2/_3 全系、btn_tab_other_on 以外
+  的标签页族。
+- 剩余 151 条与 C 类终证清单一一对应(引擎同表现,不再修)。
+- VARACT **0 条**;场景流(LOGO→BG→fade→标题画面)与修复前逐行一致。
+
+### 关联
+
+- known-issues.md 问题 2 部分结案(2.3 A/B 类经 `_N` 回退消解;
+  C 类终证为包内不存在;2.4 前导杂字节定性更新)。
+- 结论汇总表:资源层新增 `_N` 变体剥离行(Likely)、
+  cgsys_ec 名字首字节行(Unknown)。
+- 临时探针 tmp_probe_roots/rootbyte/rawidx/crc/nonpng 用毕已删。
 
 ***
 
