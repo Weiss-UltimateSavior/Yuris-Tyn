@@ -54,7 +54,7 @@ Cargo workspace,17 个 crate 按层次划分:
 | **YSTB** | 脚本容器。4 分区 + 4 字节循环 XOR(密钥逐样本定位);命令区定长 12B 记录 |
 | **YSCF** | 编译器配置/键值表 |
 | **YSCM** | 引擎命令槽位定义(命令名 → 参数槽名表) |
-| **YSER** | 资源条目表 |
+| **YSER** | 错误消息池 |
 | **YSSD + SNP** | 存档格式;SNP = snappy 变体(YSSNP.DLL 全逆向:字面量长度 +1、copy 族与标准一致) |
 | **op.ypf** | 实为 ASF/WMV 视频(OP 动画),非加密封包 |
 | 资源内容 | 图像 = 标准 PNG、音频 = 标准 OGG(可直接用 image / symphonia 解码) |
