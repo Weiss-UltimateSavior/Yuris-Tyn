@@ -165,7 +165,7 @@ impl PlayerCore {
         }
         let mut to_load: Vec<(u64, Vec<u8>)> = Vec::new();
         for ev in fresh {
-            if let yuris_vm::VmEvent::Cg { id, file, .. } = ev {
+            if let yuris_vm::VmEvent::Cg { pc, script_id, id, file, .. } = ev {
                 let Some(name) = id else { continue };
                 let rid = fnv1a(name.as_bytes());
                 if self.loaded.contains(&rid) {
@@ -178,7 +178,9 @@ impl PlayerCore {
                 let path = String::from_utf8_lossy(f).into_owned();
                 match self.index.read_image_bytes(&path) {
                     Some(data) => to_load.push((rid, data)),
-                    None => eprintln!("[player] CG 图像解析失败:{path}"),
+                    None => eprintln!(
+                        "[player] CG 图像解析失败:{path} (s{script_id} pc={pc})"
+                    ),
                 }
             }
         }

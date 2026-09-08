@@ -3185,6 +3185,24 @@ player 每次未命中打一行日志(引擎静默),如需可降为 debug 级/
 - 失败分组:`grep "CG 图像解析失败" run.log | sed … | sort | uniq -c`
   与上表逐组核对,合计 151。
 
+#### 5. 同日补充:失败日志补 sid/pc —— 宏体执行点钉在 s9(问题 1 排查第 1 步手法复用)
+
+按 known-issues 问题 1 排查第 1 步(「补上下文后钉实单点」)同款手法,
+`VmEvent::Cg` 新增 `script_id` 字段,player 失败行补 `(s{sid} pc={pc})`。
+实跑 45 秒窗口,151 条全部带上定位:
+
+| 执行点 | 宏体 | 条数 | 路径族 |
+| --- | --- | --- | --- |
+| s9 pc=978 | es.BT.CG.SET | 118 | btn_show×18+btn_check×16+c01~16×16+c07/08/09×3+sound_3×65 |
+| s9 pc=1329 | es.BT.MAP.CG.SET | 19 | btn_all_mask×16+3 |
+| s9 pc=1072 / pc=1297 | 文本页两调用点 | 各 5 | tip_mes_preview_1/2/3、btn_tab_other_on、back_other |
+| s9 pc=1006 | allon/alloff 族 | 4 | other/sound_3 的 btn_allon/alloff_bt3 |
+
+两点细化(不改结论):**es.BT.* 宏体实现在 s9 系统宏库**,s250~s254
+为调用侧字面量(「字面量数==失败次数」闭合在调用侧成立);预览/标签/
+背景的 ×2 重复 = pc=1072 与 pc=1297 **两个不同调用点**各发一次,
+非同点时间重复。VARACT 0 条,无回归。
+
 ### 关联
 
 - known-issues.md 问题 2 全案终结(2.7 新增根因全景;2.6 遗留项

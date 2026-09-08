@@ -213,6 +213,8 @@ pub enum VmEvent {
     Cg {
         /// 组下标。
         pc: usize,
+        /// 发出命令的脚本号(yst%05d;素材请求源定位用,成果 75)。
+        script_id: u16,
         /// ID(名称,若为字符串)。
         id: Option<String>,
         /// X/Y/Z 位置(若提供)。
@@ -421,7 +423,7 @@ pub fn event_json(e: &VmEvent) -> String {
                 r#"{{"ev":"text","pc":{pc},"file":{f},"let":{let_flag},"clear":{clear_flag}}}"#
             )
         }
-        VmEvent::Cg { pc, id, position, param_count, file } => {
+        VmEvent::Cg { pc, script_id, id, position, param_count, file } => {
             let idj = id.clone()
                 .map(|i| "{\"s\":\"".to_string() + &json_escape(&i) + "\"}")
                 .unwrap_or_else(|| "null".to_string());
@@ -430,7 +432,7 @@ pub fn event_json(e: &VmEvent) -> String {
                 let hex: Vec<String> = f.iter().map(|b| format!("{b:02x}")).collect();
                 format!(r#"{{"hex":"{}"}}"#, hex.join(""))
             }).unwrap_or_else(|| "null".to_string());
-            format!(r#"{{"ev":"cg","pc":{pc},"id":{idj},"pos":{posj},"n":{param_count},"file":{fj}}}"#)
+            format!(r#"{{"ev":"cg","sid":{script_id},"pc":{pc},"id":{idj},"pos":{posj},"n":{param_count},"file":{fj}}}"#)
         }
         VmEvent::Sound { pc, id, file, play, param_count } => {
             let idj = id.clone()
@@ -1756,6 +1758,7 @@ impl GroupVm {
                     }
                     self.events.push(VmEvent::Cg {
                         pc: self.pc,
+                        script_id: self.ctx.script_id,
                         id,
                         position,
                         param_count: count,

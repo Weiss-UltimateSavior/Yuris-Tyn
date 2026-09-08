@@ -290,6 +290,12 @@ LENGTH 槽 13 及 fallback 的字节长实现;删除 `sjis_byte_len`。
   对照 Confirmed;引擎同执行 Likely;加载时机 Unknown,不影响结论)。
 - 唯一实现差异:我方 player 每次未命中打一行日志(引擎静默),
   如噪声扰人可降 debug 级/按路径去重(未做,保留取证可见性)。
+- **执行点定位(同日补充,成果 75 §5)**:失败日志已补 sid/pc
+  (`VmEvent::Cg` 新增 `script_id`;日志行尾 `(s{sid} pc={pc})`)。
+  151 条全部钉在 **s9 系统宏库**的宏体:pc=978(es.BT.CG.SET)×118、
+  pc=1329(es.BT.MAP.CG.SET)×19、pc=1072/1297(文本页两调用点)各×5、
+  pc=1006(allon/alloff)×4 —— s250~s254 为调用侧字面量;preview/
+  tab/back 的 ×2 重复来自 pc=1072 与 1297 两个调用点,非时间重复。
 
 ***
 
