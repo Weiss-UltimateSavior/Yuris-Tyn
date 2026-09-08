@@ -64,6 +64,8 @@ pub trait ScenarioHost {
     fn reset_scene(&mut self);
     /// 读取全局槽(\GO.G.IF 的 G=n)。
     fn global(&self, slot: usize) -> i64;
+    /// 写全局槽(\TITLE 按钮选择 → G1;引擎内置标题语义,成果 77/78)。
+    fn set_global(&mut self, _slot: usize, _value: i64) {}
     /// 调试日志面。
     fn log(&mut self, msg: &str);
 }
@@ -236,7 +238,13 @@ impl ScenarioPlayer {
         if matches!(&self.wait, Some(Wait::TitleMenu)) {
             match host.poll_title_menu() {
                 None => return,
-                Some(TitleMenuAction::Start) => self.wait = None, // 落入执行循环 → 开场
+                Some(TitleMenuAction::Start) => {
+                    // 引擎原生:\TITLE 把按钮选择写入 G1(START=1)后返回剧本,
+                    // 经 \GO.G.IF(1,"==",1,SCENARIO_MAIN) 落开场(成果 77 剧本
+                    // 实证);不再依赖末尾 \GO(SCENARIO_MAIN) 兜底。
+                    host.set_global(1, 1);
+                    self.wait = None;
+                }
                 Some(TitleMenuAction::Load | TitleMenuAction::LastLoad) => {
                     // 不预清 wait:读档成功 → start() 重置 wait;失败(无快存)→ 保持标题等待
                     host.title_load();
@@ -641,5 +649,64 @@ mod go_gif_tests {
         assert_eq!(run_goto_gif(&base("!="), 2), 0);
         assert_eq!(run_goto_gif(&base("<"), 1), 1);
         assert_eq!(run_goto_gif(&base("<="), 2), 1);
+    }
+}
+
+#[cfg(test)]
+mod title_menu_tests {
+    //! 标题菜单 G1 写入回归(成果 78):\TITLE → 点 START → G1=1 →
+    //! \GO.G.IF(1,"==",1,MAIN) 命中(非兜底 FALLBACK),对齐引擎原生流。
+
+    use super::*;
+
+    struct TitleHost {
+        globals: std::cell::RefCell<std::collections::HashMap<usize, i64>>,
+        resets: std::cell::Cell<usize>,
+    }
+    impl ScenarioHost for TitleHost {
+        fn show_bg(&mut self, _: &str, _: u64, _: [u8; 3]) {}
+        fn show_sprite(&mut self, _: &str, _: Option<&str>, _: i64, _: i64, _: u64) {}
+        fn show_tachie(&mut self, _: &str, _: i64, _: i64, _: u64) {}
+        fn hide_sprite(&mut self, _: &str, _: u64) {}
+        fn fade(&mut self, _: bool, _: u64, _: [u8; 3]) {}
+        fn show_text(&mut self, _: Option<u32>, _: &str, _: &str) {}
+        fn clear_text(&mut self) {}
+        fn play_voice(&mut self, _: &str) {}
+        fn play_bgm(&mut self, _: &str, _: Option<i64>) {}
+        fn play_se(&mut self, _: &str) {}
+        fn title_screen(&mut self) {}
+        fn poll_title_menu(&mut self) -> Option<TitleMenuAction> {
+            Some(TitleMenuAction::Start) // 模拟点击 START
+        }
+        fn poll_choice(&mut self, _: usize) -> Option<usize> {
+            None
+        }
+        fn show_choices(&mut self, _: &[String]) {}
+        fn clear_choices(&mut self) {}
+        fn reset_scene(&mut self) {
+            self.resets.set(self.resets.get() + 1);
+        }
+        fn global(&self, slot: usize) -> i64 {
+            self.globals.borrow().get(&slot).copied().unwrap_or(0)
+        }
+        fn set_global(&mut self, slot: usize, value: i64) {
+            self.globals.borrow_mut().insert(slot, value);
+        }
+        fn log(&mut self, _: &str) {}
+    }
+
+    #[test]
+    fn title_start_writes_g1_and_branches() {
+        let sc = "#TITLE\n\\TITLE\n\\GO.G.IF(1, \"==\", 1, MAIN)\n\\GO(FALLBACK)\n#MAIN\n\\END\n#FALLBACK\n\\END\n";
+        let mut p = ScenarioPlayer::new(vec![("t.txt".into(), sc.as_bytes().to_vec())]);
+        let _ = p.goto("TITLE");
+        let mut h = TitleHost {
+            globals: Default::default(),
+            resets: std::cell::Cell::new(0),
+        };
+        p.tick(&mut h, false); // \TITLE → Wait::TitleMenu
+        p.tick(&mut h, false); // poll → Start → 写 G1 → 继续执行循环
+        assert_eq!(h.globals.borrow().get(&1).copied(), Some(1), "START 应写 G1=1");
+        assert_eq!(h.resets.get(), 1, "应命中 \\GO.G.IF 跳 MAIN(1 次 reset_scene),而非兜底");
     }
 }

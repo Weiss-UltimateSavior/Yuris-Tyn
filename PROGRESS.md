@@ -3291,6 +3291,37 @@ P1 保真度核心/P2 反馈层/P3 功能补全)。
 
 ***
 
+## 2026-09-08 标题按钮三态绘制 + G1 写入(P1,成果 78)
+
+### 成果 78:按钮 `_off/_on/_over` 三态切换 + START 写 G1 走原生分支 —— **Confirmed(单测+素材)/Likely(实机目测待确认)**
+
+**实现**(差距 G1/G2/G3,计划 P1-1/P1-2):
+- `TitleButton{rect,id,rids[3],shown}`(`title_buttons` 元素升级,原
+  二元组弃);`title_screen()` 预载 5 钮 × 3 态 = 15 张
+  (`cgsys/title/btn_{start,load,lastload,extra,end}_{off,on,over}`,
+  单态失败 = None 不切该态),默认绘 `_off`(旧实现误绘 `_on` 高亮)。
+- `PlayerCore::update_title_buttons()`(固有 impl):每帧按
+  `cursor_logical` 命中 + `frame_clicked` 定态(悬停 `_on`/按下帧
+  `_over`/其余 `_off`),仅换资源不动几何;`Player::tick` 在
+  scenario.tick 后调用;`reset_title_layers()` 清 `title_buttons`
+  (补成果 76 漏项:命中区曾不清)。
+- `ScenarioHost::set_global(slot,value)` 默认方法(测试桩零改动);
+  scenario `TitleMenuAction::Start` → `host.set_global(1,1)` 后
+  `wait=None`,流程经 `\GO.G.IF(1,"==",1,SCENARIO_MAIN)` 落开场
+  (成果 77 剧本实证路径;不再依赖兜底 `\GO(SCENARIO_MAIN)`)。
+  PlayerCore 写 `@50[slot]`(`store_mut().set_elem`,与 `global()`
+  同槽;@50 未声明时记日志退回兜底,不劣于旧态)。
+
+**验证**:
+- `cargo test -p yuris-player-core` 4 通过,含新增回归
+  `title_start_writes_g1_and_branches`(\TITLE → Start → G1=1 →
+  GO.G.IF 命中 MAIN,兜底未走);
+- release 构建 + 启动:标题 15 张三态素材全命中(无「未命中」),
+  VARACT 0 条;**实机目测悬停高亮/按下闪烁、START 日志
+  `GO.G.IF @[slot 1]=1 == 1 → SCENARIO_MAIN` 待用户点击确认**。
+
+***
+
 ## 更新约定
 
 每次更新本文件时：

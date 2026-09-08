@@ -80,13 +80,15 @@
 
 ### P1 保真度核心(按钮机制对齐原生)
 
-- [ ] **P1-1 按钮三态绘制**:默认 `_off`;`cursor_logical` 命中时切 `_on`;按下切 `_over`。
-      实现:每帧对 5 个按钮层按命中状态换资源(`load_scenario_image` 缓存三态 ResourceId)。
-      验证:实机目测悬停高亮、按下闪烁。
-- [ ] **P1-2 写 G1 走原生分支**:Start→`G1=1` 后 `wait=None`(经 `\GO.G.IF` 落 SCENARIO_MAIN,删除对兜底路径的依赖)。
-      验证:日志确认 `\GO.G.IF` 命中 SCENARIO_MAIN。
+- [x] **P1-1 按钮三态绘制**:默认 `_off`;`cursor_logical` 命中时切 `_on`;按下帧切 `_over`。
+      实现(成果 78):`TitleButton{rect,id,rids[3],shown}`;`title_screen()` 预载
+      15 张三态素材,默认绘 `_off`;`update_title_buttons()` 每帧按命中态换层资源
+      (Player::tick 在 scenario.tick 后调用)。验证:单测通过;**实机目测待用户点击确认**。
+- [x] **P1-2 写 G1 走原生分支**:Start→`host.set_global(1,1)` 后 `wait=None`(经
+      `\GO.G.IF` 落 SCENARIO_MAIN)。`ScenarioHost` 新增 `set_global` 默认方法,
+      PlayerCore 写 `@50[slot]`(与 `global()` 同槽)。验证:回归单测
+      `title_start_writes_g1_and_branches` 通过;**实机日志待确认 GO.G.IF 命中**。
 - [ ] **P1-3 补 OUTLINE 按钮**(`btn_arasuji_*`,G1=2 → `\GO.G.IF` 落 ARA,前情回顾直接可播)。
-      验证:点击 OUTLINE 进入 ara.txt 播放。
 - [ ] **P1-4 `_na` 态**:无存档时 LOAD/CONTINUE 用 `btn_*_na` 且点击无效(依赖存档系统状态,可先用"存档为空"近似)。
 
 ### P2 反馈层

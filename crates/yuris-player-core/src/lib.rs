@@ -80,6 +80,25 @@ pub struct FadeState {
     pub color: [u8; 3],
 }
 
+/// 标题按钮三态下标(素材后缀 `_off`/`_on`/`_over`;成果 78 图像实证)。
+pub const TITLE_BTN_OFF: usize = 0;
+/// 悬停/聚焦高亮态。
+pub const TITLE_BTN_ON: usize = 1;
+/// 按下态。
+pub const TITLE_BTN_OVER: usize = 2;
+
+/// 标题按钮:命中区 + 三态资源 + 当前显示态(成果 78)。
+pub struct TitleButton {
+    /// 命中区 rect = x,y,w,h(逻辑坐标,原生尺寸)。
+    pub rect: [f32; 4],
+    /// 按钮层 id(0x5C_7000_0005..)。
+    pub id: u64,
+    /// 三态资源 [off, on, over](title_screen 预载;加载失败 = None)。
+    pub rids: [Option<ResourceId>; 3],
+    /// 当前显示态(TITLE_BTN_*)。
+    pub shown: usize,
+}
+
 /// 播放核心(实现 ScenarioHost;与 scenario 分裂借用)。
 pub struct PlayerCore {
     pub index: Arc<PacFileIndex>,
@@ -112,8 +131,8 @@ pub struct PlayerCore {
     /// 最近 CursorMoved 原始像素(winit 0.30 无 cursor_position 轮询)。
     pub last_cursor_px: Option<(f64, f64)>,
     pub frame_clicked: bool,
-    /// 标题按钮命中区(rect = x,y,w,h 逻辑坐标;id = 按钮层 id)。
-    pub title_buttons: Vec<([f32; 4], u64)>,
+    /// 标题按钮(命中区 + 三态资源;成果 78)。
+    pub title_buttons: Vec<TitleButton>,
     /// 标题 LOAD/LASTLOAD 请求(tick 内置,Player::tick 消费走快读)。
     pub request_title_load: bool,
     /// 标题 END 请求(主循环消费后退出)。
@@ -214,6 +233,45 @@ impl PlayerCore {
         b.load_image(rid, &data).ok()?;
         self.loaded.insert(rid.0);
         Some(rid)
+    }
+
+    /// 标题按钮三态切换(每帧;悬停 `_on`、按下帧 `_over`,其余 `_off`;成果 78)。
+    fn update_title_buttons(&mut self) {
+        if self.title_buttons.is_empty() {
+            return;
+        }
+        let (cx, cy) = self.cursor_logical;
+        let clicked = self.frame_clicked;
+        let mut updates: Vec<(u64, ResourceId)> = Vec::new();
+        for b in &mut self.title_buttons {
+            let [x, y, w, h] = b.rect;
+            let hover = cx >= x as i64
+                && cx < (x + w) as i64
+                && cy >= y as i64
+                && cy < (y + h) as i64;
+            let want = if hover && clicked {
+                TITLE_BTN_OVER
+            } else if hover {
+                TITLE_BTN_ON
+            } else {
+                TITLE_BTN_OFF
+            };
+            if want != b.shown {
+                if let Some(rid) = b.rids[want] {
+                    b.shown = want;
+                    updates.push((b.id, rid));
+                }
+            }
+        }
+        if updates.is_empty() {
+            return;
+        }
+        let scene = self.bridge.scene_mut();
+        for (id, rid) in updates {
+            if let Some(layer) = scene_mut_layer(scene, id) {
+                layer.resource = Some(rid);
+            }
+        }
     }
 
     /// 渲染台词/选择肢到 RGBA 白字(fontdue;按内容定宽,自动换行)。
@@ -618,26 +676,22 @@ impl ScenarioHost for PlayerCore {
         // 内置标题:eyecatch/st 分层素材组合(bg01a + sir/han + logo + 真实按钮列)
         // 布局对齐真机截图(用户 2026-09-05 提供):银发左 / 双马尾中 / logo 右上 / 按钮右下
         self.reset_title_layers();
-        // (path, x, y, id, alpha, fullscreen) — fullscreen=true → 拉伸全屏;
-        // false → 原生尺寸(按钮 317x76)
-        let layers: [(&str, i64, i64, u64, f32, bool); 10] = [
-            ("eyecatch/st/bg01a", 0, 0, 0x5C_7000_0000, 1.0, true),
-            ("eyecatch/st/tet", 0, 0, 0x5C_7000_0001, 1.0, true),
-            ("eyecatch/st/sir", -1058, 0, 0x5C_7000_0002, 1.0, true),
-            ("eyecatch/st/han", -86, 0, 0x5C_7000_0003, 1.0, true),
-            ("eyecatch/st/logo", 1046, -255, 0x5C_7000_0004, 1.0, true),
-            ("cgsys/title/btn_start_on", 1355, 479, 0x5C_7000_0005, 1.0, false),
-            ("cgsys/title/btn_load_on", 1355, 582, 0x5C_7000_0006, 1.0, false),
-            (
-                "cgsys/title/btn_lastload_on",
-                1355,
-                670,
-                0x5C_7000_0007,
-                1.0,
-                false,
-            ),
-            ("cgsys/title/btn_extra_on", 1319, 784, 0x5C_7000_0008, 1.0, false),
-            ("cgsys/title/btn_end_off", 1611, 784, 0x5C_7000_0009, 1.0, false),
+        // 全屏底层(path, x, y, id)→ 拉伸全屏
+        let layers: [(&str, i64, i64, u64); 5] = [
+            ("eyecatch/st/bg01a", 0, 0, 0x5C_7000_0000),
+            ("eyecatch/st/tet", 0, 0, 0x5C_7000_0001),
+            ("eyecatch/st/sir", -1058, 0, 0x5C_7000_0002),
+            ("eyecatch/st/han", -86, 0, 0x5C_7000_0003),
+            ("eyecatch/st/logo", 1046, -255, 0x5C_7000_0004),
+        ];
+        // 按钮列:三态素材 `cgsys/title/btn_{名}_{off,on,over}`(成果 78 图像
+        // 实证);默认显示 `_off` 常态,悬停/按下由 update_title_buttons 切换。
+        let buttons: [(&str, i64, i64, u64); 5] = [
+            ("cgsys/title/btn_start", 1355, 479, 0x5C_7000_0005),
+            ("cgsys/title/btn_load", 1355, 582, 0x5C_7000_0006),
+            ("cgsys/title/btn_lastload", 1355, 670, 0x5C_7000_0007),
+            ("cgsys/title/btn_extra", 1319, 784, 0x5C_7000_0008),
+            ("cgsys/title/btn_end", 1611, 784, 0x5C_7000_0009),
         ];
         let white = ResourceId(0x5C_0000_0005);
         if !self.loaded.contains(&white.0) {
@@ -662,7 +716,7 @@ impl ScenarioHost for PlayerCore {
             let scene = self.bridge.scene_mut();
             scene.upsert_layer(bgw);
         }
-        for (path, x, y, id, alpha, fullscreen) in layers {
+        for (path, x, y, id) in layers {
             let Some(rid) = self.load_scenario_image(path) else {
                 eprintln!("[scenario] 标题层未命中: {path}");
                 continue;
@@ -672,32 +726,61 @@ impl ScenarioHost for PlayerCore {
                 .as_ref()
                 .and_then(|b| b.image_size(rid.0))
                 .unwrap_or((1920, 1080));
-            let (sx, sy) = if fullscreen {
-                (LOGICAL_W / iw as f32, LOGICAL_H / ih as f32)
-            } else {
-                (1.0, 1.0)
-            };
-            if !fullscreen {
-                // 按钮命中区(成果 76):原生尺寸,左上角 (x,y)
-                self.title_buttons
-                    .push(([x as f32, y as f32, iw as f32, ih as f32], id));
-            }
             let layer = Layer {
                 id,
                 z: 1,
                 visible: true,
                 x: x as f32,
                 y: y as f32,
-                scale_x: sx,
-                scale_y: sy,
-                alpha,
+                scale_x: LOGICAL_W / iw as f32,
+                scale_y: LOGICAL_H / ih as f32,
+                alpha: 1.0,
                 rotation: 0.0,
                 resource: Some(rid),
             };
             let scene = self.bridge.scene_mut();
             scene.upsert_layer(layer);
         }
-        eprintln!("[scenario] 标题画面(eyecatch 分层组合;按钮菜单:START/LOAD/LASTLOAD/EXTRA/END)");
+        for (base, x, y, id) in buttons {
+            // 三态预载(off/on/over;单态失败 = None,不切该态)
+            let mut rids: [Option<ResourceId>; 3] = [None, None, None];
+            for (i, suffix) in ["_off", "_on", "_over"].iter().enumerate() {
+                rids[i] = self.load_scenario_image(&format!("{base}{suffix}"));
+            }
+            let Some(rid0) = rids[TITLE_BTN_OFF] else {
+                eprintln!("[scenario] 标题按钮未命中: {base}_off");
+                continue;
+            };
+            let (iw, ih) = self
+                .backend
+                .as_ref()
+                .and_then(|b| b.image_size(rid0.0))
+                .unwrap_or((317, 76));
+            // 命中区(成果 76):原生尺寸,左上角 (x,y)
+            self.title_buttons.push(TitleButton {
+                rect: [x as f32, y as f32, iw as f32, ih as f32],
+                id,
+                rids,
+                shown: TITLE_BTN_OFF,
+            });
+            let layer = Layer {
+                id,
+                z: 1,
+                visible: true,
+                x: x as f32,
+                y: y as f32,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                alpha: 1.0,
+                rotation: 0.0,
+                resource: Some(rid0),
+            };
+            let scene = self.bridge.scene_mut();
+            scene.upsert_layer(layer);
+        }
+        eprintln!(
+            "[scenario] 标题画面(eyecatch 分层组合;按钮菜单:START/LOAD/LASTLOAD/EXTRA/END;三态 _off/_on/_over)"
+        );
     }
 
     fn poll_choice(&mut self, count: usize) -> Option<usize> {
@@ -799,6 +882,22 @@ impl ScenarioHost for PlayerCore {
         }
     }
 
+    fn set_global(&mut self, slot: usize, value: i64) {
+        // \TITLE 按钮选择写入(成果 78):与 global() 同槽(@50[slot]);
+        // @50 未声明时记日志,流程退回剧本兜底 \GO(SCENARIO_MAIN)(不劣于旧态)。
+        let r = VarRef {
+            space: yuris_value::VarSpace::At,
+            id: 50,
+        };
+        if let Err(e) = self
+            .vm
+            .store_mut()
+            .set_elem(&r, &[slot as i64], Value::Int(value))
+        {
+            eprintln!("[scenario] 写 G{slot}={value} 失败: {e}");
+        }
+    }
+
     fn log(&mut self, msg: &str) {
         eprintln!("[scenario] {msg}");
     }
@@ -808,14 +907,14 @@ impl ScenarioHost for PlayerCore {
             return None;
         }
         let (cx, cy) = self.cursor_logical;
-        for (rect, id) in &self.title_buttons {
-            let [x, y, w, h] = *rect;
+        for b in &self.title_buttons {
+            let [x, y, w, h] = b.rect;
             if cx >= x as i64
                 && cx < (x + w) as i64
                 && cy >= y as i64
                 && cy < (y + h) as i64
             {
-                let act = match *id {
+                let act = match b.id {
                     0x5C_7000_0005 => TitleMenuAction::Start,
                     0x5C_7000_0006 => TitleMenuAction::Load,
                     0x5C_7000_0007 => TitleMenuAction::LastLoad,
@@ -823,7 +922,7 @@ impl ScenarioHost for PlayerCore {
                     0x5C_7000_0009 => TitleMenuAction::End,
                     _ => continue,
                 };
-                eprintln!("[scenario] 标题按钮 id={id:#x} → {act:?}");
+                eprintln!("[scenario] 标题按钮 id={:#x} → {act:?}", b.id);
                 return Some(act);
             }
         }
@@ -876,6 +975,7 @@ impl Player {
         core.update_sprite_fades();
         let clicked = std::mem::take(&mut core.clicked);
         self.scenario.tick(core, clicked);
+        core.update_title_buttons(); // 标题按钮三态(悬停/按下帧;成果 78)
         // 标题 LOAD/LASTLOAD:tick 内置请求,此处消费(scenario 已在快读中被 start() 重置)
         if core.request_title_load {
             core.request_title_load = false;
@@ -979,6 +1079,7 @@ impl PlayerCore {
         for i in 0..12u64 {
             scene.hide_layer(0x5C_7000_0000 + i);
         }
+        self.title_buttons.clear(); // 命中区同步失效(成果 78)
         self.sprites.clear();
         self.sprite_fades.clear();
         scene.hide_layer(SC_TEXT);
