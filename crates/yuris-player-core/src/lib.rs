@@ -87,6 +87,13 @@ pub const TITLE_BTN_ON: usize = 1;
 /// 按下态。
 pub const TITLE_BTN_OVER: usize = 2;
 
+/// 标题按钮悬停音(sysse/sse02)。es.BT.SE.SET 第一参数全语料 444 组恒定,
+/// 时长 0.086s 显著短促(其余 0.30~0.39s);成果 80。
+pub const TITLE_SE_HOVER: &str = "sse02";
+/// 标题按钮决定音(sysse/sse03)。es.BT.SE.SET 第二参数(普通按钮 316 组);
+/// BACK 型取消钮为 sse06(128 组)—— 参数 2 随按钮语境变化,标题六钮均普通型。
+pub const TITLE_SE_DECIDE: &str = "sse03";
+
 /// 标题按钮:命中区 + 三态资源 + 当前显示态(成果 78;坐标/绑定成果 79)。
 pub struct TitleButton {
     /// 命中区 rect = x,y,w,h(逻辑坐标,原生尺寸)。
@@ -100,6 +107,8 @@ pub struct TitleButton {
     /// 可用性(false = `_na` 不可用态:单素材、无三态切换、点击无效 ——
     /// 原生 es.BT 把无存档 CONTINUE 注册为 BTN.LLOAD.NA 独立按钮,成果 79)。
     pub active: bool,
+    /// 上一帧悬停态(进入命中区的边沿触发悬停音,成果 80)。
+    pub hovered: bool,
 }
 
 /// 播放核心(实现 ScenarioHost;与 scenario 分裂借用)。
@@ -242,6 +251,7 @@ impl PlayerCore {
     }
 
     /// 标题按钮三态切换(每帧;悬停 `_on`、按下帧 `_over`,其余 `_off`;成果 78)。
+    /// 悬停**进入**命中区的边沿播悬停音(P2-2,成果 80)。
     fn update_title_buttons(&mut self) {
         if self.title_buttons.is_empty() {
             return;
@@ -249,6 +259,7 @@ impl PlayerCore {
         let (cx, cy) = self.cursor_logical;
         let clicked = self.frame_clicked;
         let mut updates: Vec<(u64, ResourceId)> = Vec::new();
+        let mut hover_entered = false;
         for b in &mut self.title_buttons {
             if !b.active {
                 continue; // `_na` 灰化态:单素材,不参与三态(成果 79)
@@ -258,6 +269,10 @@ impl PlayerCore {
                 && cx < (x + w) as i64
                 && cy >= y as i64
                 && cy < (y + h) as i64;
+            if hover && !b.hovered {
+                hover_entered = true;
+            }
+            b.hovered = hover;
             let want = if hover && clicked {
                 TITLE_BTN_OVER
             } else if hover {
@@ -271,6 +286,9 @@ impl PlayerCore {
                     updates.push((b.id, rid));
                 }
             }
+        }
+        if hover_entered {
+            self.play_sysse(TITLE_SE_HOVER);
         }
         if updates.is_empty() {
             return;
@@ -440,6 +458,18 @@ impl PlayerCore {
             }
         }
         None
+    }
+
+    /// 播系统 UI 音(sysse 包;标题按钮悬停/决定音,P2-2 成果 80)。
+    /// 未命中(包缺/条目缺)记录决策不出声,不阻断流程。
+    fn play_sysse(&mut self, name: &str) {
+        match self.resolve_audio(&self.audio_packs, "", name) {
+            Some(data) => self.audio.play_se(name, data),
+            None => {
+                self.audio.play_se(name, Vec::new());
+                eprintln!("[audio] sysse 未命中: {name}");
+            }
+        }
     }
 
     /// 渲染台词窗底框(txspace 纹理 + 半透明底)到场景(z=80)。
@@ -675,7 +705,7 @@ impl ScenarioHost for PlayerCore {
 
     fn play_se(&mut self, name: &str) {
         if let Some(data) = self.resolve_audio(&self.audio_packs, "se\\", name) {
-            self.audio.play_se(data);
+            self.audio.play_se(name, data);
         } else {
             eprintln!("[audio] se 未命中: {name}");
         }
@@ -790,6 +820,7 @@ impl ScenarioHost for PlayerCore {
                 rids,
                 shown: TITLE_BTN_OFF,
                 active: !na,
+                hovered: false,
             });
             let layer = Layer {
                 id,
@@ -941,6 +972,7 @@ impl ScenarioHost for PlayerCore {
                     _ => continue,
                 };
                 eprintln!("[scenario] 标题按钮 id={:#x} → {act:?}", b.id);
+                self.play_sysse(TITLE_SE_DECIDE); // 决定音(P2-2,成果 80)
                 return Some(act);
             }
         }
@@ -1122,5 +1154,122 @@ mod text_metrics_tests {
             println!("'{ch}': width={} height={} xmin={} ymin={} adv={}",
                 m.width, m.height, m.xmin, m.ymin, m.advance_width);
         }
+    }
+}
+
+#[cfg(test)]
+mod title_se_tests {
+    //! P2-2 回归(成果 80):标题按钮悬停进入/点击 → sysse SE 决策。
+    //! 空音频包下 resolve 未命中,决策经 `Audio::se_log` 断言(不出声)。
+
+    use super::*;
+    use yuris_format::ystb::YstbFile;
+
+    /// 最小合成 YSTB(1 组 0 窗;GroupVm 唯一构造路径 `load`)。
+    fn minimal_vm() -> GroupVm {
+        fn xor(r: &[u8], key: [u8; 4]) -> Vec<u8> {
+            r.iter().enumerate().map(|(i, b)| b ^ key[i % 4]).collect()
+        }
+        let key = [0x2b, 0x90, 0x4f, 0x93];
+        let part1 = xor(&[0u8, 0, 0, 0], key); // 1 组 0 窗(Σcount*12==0)
+        let p4 = xor(&[0u8; 4], key);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"YSTB");
+        out.extend_from_slice(&555u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes()); // unknown1 = 组数
+        out.extend_from_slice(&(part1.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // command_len
+        out.extend_from_slice(&0u32.to_le_bytes()); // content_len
+        out.extend_from_slice(&(p4.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&part1);
+        out.extend_from_slice(&p4);
+        GroupVm::load(YstbFile::from_bytes(&out, key).expect("ystb")).expect("vm")
+    }
+
+    fn make_core() -> PlayerCore {
+        let bytes = load_cjk_font().expect("no cjk font");
+        let font = fontdue::Font::from_bytes(
+            bytes,
+            fontdue::FontSettings { collection_index: 0, scale: 40.0, load_substitutions: true },
+        )
+        .unwrap();
+        PlayerCore {
+            index: Arc::new(PacFileIndex::default()),
+            vm: minimal_vm(),
+            bridge: SceneBridge::new(),
+            loaded: HashSet::new(),
+            backend: None,
+            events_cursor: 0,
+            wait_frames: 0,
+            wait_until: None,
+            cursor_logical: (0, 0),
+            key_pulse: false,
+            key_pulse_frames: 0,
+            font,
+            fade: None,
+            clicked: false,
+            sprites: Vec::new(),
+            sprite_fades: Vec::new(),
+            audio_packs: Arc::new(PacFileIndex::default()),
+            audio: crate::audio::Audio::new(),
+            choices: None,
+            last_cursor_px: None,
+            frame_clicked: false,
+            title_buttons: Vec::new(),
+            request_title_load: false,
+            request_quit: false,
+            globals: HashMap::new(),
+            game_dir: std::path::PathBuf::new(),
+        }
+    }
+
+    fn btn(id: u64, active: bool) -> TitleButton {
+        TitleButton {
+            rect: [100.0, 100.0, 50.0, 50.0],
+            id,
+            rids: [None, None, None],
+            shown: TITLE_BTN_OFF,
+            hovered: false,
+            active,
+        }
+    }
+
+    #[test]
+    fn title_hover_se_fires_on_enter_edge_only() {
+        let mut core = make_core();
+        core.title_buttons.push(btn(0x5C_7000_0005, true));
+        core.cursor_logical = (110, 110);
+        core.update_title_buttons();
+        assert_eq!(core.audio.se_log, vec!["sse02"]);
+        core.update_title_buttons(); // 悬停保持:不重复
+        assert_eq!(core.audio.se_log.len(), 1);
+        core.cursor_logical = (10, 10);
+        core.update_title_buttons(); // 离开
+        assert_eq!(core.audio.se_log.len(), 1);
+        core.cursor_logical = (120, 120);
+        core.update_title_buttons(); // 再进入:再响一次
+        assert_eq!(core.audio.se_log, vec!["sse02", "sse02"]);
+    }
+
+    #[test]
+    fn title_click_plays_decide_se() {
+        let mut core = make_core();
+        core.title_buttons.push(btn(0x5C_7000_0005, true));
+        core.cursor_logical = (110, 110);
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), Some(TitleMenuAction::Start));
+        assert_eq!(core.audio.se_log, vec!["sse03"]);
+    }
+
+    #[test]
+    fn title_na_button_is_silent() {
+        let mut core = make_core();
+        core.title_buttons.push(btn(0x5C_7000_0007, false));
+        core.cursor_logical = (110, 110);
+        core.update_title_buttons(); // `_na`:不参与三态/不响
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None); // 点击无效
+        assert!(core.audio.se_log.is_empty());
     }
 }

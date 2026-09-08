@@ -1,6 +1,7 @@
 # 标题界面按钮问题分析与计划
 
-> 状态:P1 保真度核心已完成(成果 78/79);悬停/SE/功能面存在遗留差距(P2/P3)。
+> 状态:P1 保真度核心已完成(成果 78/79);P2 反馈层已完成(sse 映射 + SE 接入,成果 80);
+> P3 功能画面存在遗留差距。
 > 方法:证据等级驱动逆向(Confirmed / Likely / Hypothesis / Unknown)。
 > 取证日期:2026-09-08。
 
@@ -48,17 +49,30 @@
 
 另:`cgsys\config\system\btn_confirm_title_bt4.png` 存在,提示原生 END 可能有确认对话框(Hypothesis)。
 
-### 2.3 音效侧(Confirmed 缺失面 / Unknown 映射)
+### 2.3 音效侧(绑定面 Confirmed / 语义角色 Likely)
 
-- `sysse.ypf` 实存 6 个系统音效:`sysse\sse01.ogg` ~ `sse06.ogg`;
-- 播放器标题流程(`title_screen`/`poll_title_menu`)**无任何 `play_se` 调用**(代码检索实证);
-- sse01~06 与 悬停音/决定音/取消音 的具体映射 **Unknown**(需逐个试听或从引擎/脚本引用验证)。
+- `sysse.ypf` 实存 6 个系统音效:`sysse\sse01.ogg` ~ `sse06.ogg`(44.1kHz 单声道 OGG);
+- **es.BT.SE.SET 双参绑定**(yst 系统脚本槽位级实证,成果 80):按钮宏以
+  **槽 B0=0x21 = 悬停音、槽 B0=0x22 = 决定/取消音** 绑定两个音效路径。
 
-**补充取证(2026-09-08,bn.ypf yst00259)**:标题菜单由 **YSTB 脚本驱动**
-—— `yst00259.ybn` 引用 `title/btn_start`(es.BT.CG.SET)+ `BTN.START`
-(es.BT.NAME.SET)+ **`es.BT.SE.SET(sysse/sse02, sysse/sse03)`** —— 按钮
-宏绑定了两个系统音效(疑悬停/决定,试听后可升级映射为 Likely)。
-es.BT.* 宏族 = s9 系统宏库按钮工具箱(CG/XY/Z/SE/SET/NAME/GROUP.SET)。
+**映射表(成果 80,槽位级全语料统计 + 时长佐证)**:
+
+| 音效 | 时长 | 唯一参数窗口 | 语义 | 等级 |
+|---|---|---|---|---|
+| **sse02** | **0.086s** | 1075(29 文件) | **悬停音**(槽 0x21 恒定;极短促为悬停音特征) | Likely |
+| **sse03** | 0.335s | 1031(28 文件) | **决定音**(槽 0x22,普通按钮) | Likely |
+| **sse06** | 0.387s | 70(19 文件) | **取消/戻る音**(槽 0x22,BTN.BACK 型按钮) | Likely |
+| sse01 | 0.303s | 4(仅 yst00013) | 动态派发(见下) | Unknown |
+| sse04 | 0.390s | 6(仅 yst00013) | 动态派发(见下) | Unknown |
+| sse05 | 0.356s | 6(仅 yst00013) | 动态派发(见下) | Unknown |
+
+- 绑定面 Confirmed:全语料 `es.BT.SE.SET` 槽 0x21 恒 sse02,槽 0x22 ∈ {sse03, sse06};
+- **sse01/04/05 无静态按钮绑定**:仅出现在 yst00013 的 IF 条件表达式
+  `$1306[@1761] == "sysse/sse0X" && @1762 == 1 → es.SSE77.*` —— 经字符串数组
+  $1306 的运行期队列动态派发,写入方未逆向,语义不猜;
+- sc.ypf 剧本对 sse 无真实引用(命中均为 pressed/crosses 等英文子串);
+- 等级说明:「槽 0x21=悬停 / 槽 0x22=决定」的角色指派为 **Likely**
+  (参数序推断 + 时长佐证;引擎侧播放时机未做 watch 取证)。
 
 **全量解码(2026-09-08,成果 79,工具 `/tmp/dump_ystb_groups.py`)**:
 YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
@@ -102,7 +116,7 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
 | G2 | ~~按钮默认绘 `_on` 高亮~~ 已修(成果 78:默认 `_off`) | 已关闭 |
 | G3 | ~~无悬停/按下/`_na` 切换~~ 已修(成果 78 三态 + 成果 79 `_na`:仅 lastload,`btn_load` 无 `_na` 变体——**原"LOAD/CONTINUE 用 `btn_*_na`"表述证伪**) | Confirmed |
 | G4 | 按钮集 6 个(arasuji 已补,成果 79),缺 `config`(1477,745)/`manual`/`web`(后两者仅 off/over 双态;SCENE2/3 的 true/scenejump 不实装) | Confirmed |
-| G5 | 悬停/点击无 SE;sse01~06 语义映射未验证 | Confirmed + Unknown |
+| G5 | ~~悬停/点击无 SE;sse01~06 语义映射未验证~~ 已修(成果 80:映射表建立 + 悬停/决定音接入;映射见 2.3。sse01/04/05 动态派发语义仍 Unknown,不影响标题) | 已关闭 |
 | G6 | `title_load()`/`title_extra()` 为桩:LOAD/EXTRA 画面未实装 | Confirmed |
 | G7 | END 疑似有确认对话框(`btn_confirm_title_bt4`)未实现 | Hypothesis |
 
@@ -136,10 +150,25 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
       `TitleButton.active=false`(不切三态、点击无效;原生 BTN.LLOAD.NA
       同位条件注册复现)。引擎原判据 save/*.sd,本实现以快存文件为判据。
 
-### P2 反馈层
+### P2 反馈层(成果 80 完成)
 
-- [ ] **P2-1 sse 语义验证**:提取 `sse01~06.ogg` 试听/查时长,结合引擎 SE 引用(如有)建立映射表,写入 ypf.md 或 CONTEXT.md 术语。
-- [ ] **P2-2 标题按钮接入 SE**:悬停进命中区播悬停音、点击播决定音(经 `play_se`)。
+- [x] **P2-1 sse 语义验证**(成果 80):工具
+      `crates/yuris-vm/examples/tmp_sse_scan.rs`(bn.ypf 全语料 YSTB 解密 →
+      池内 sse 扫描 → 命令组归属转储)+ `tmp_sse_count.rs`(槽位级唯一窗口
+      精确计数)+ `crates/yuris-resource/examples/tmp_se_duration.rs`
+      (symphonia 时长)。结论:es.BT.SE.SET 槽 0x21 恒 `sysse/sse02`
+      (0.086s,悬停音)、槽 0x22 ∈ {sse03(决定,0.335s)、sse06(戻る,
+      0.387s)};sse01/04/05 仅 yst00013 经 $1306 队列动态派发,语义
+      Unknown。映射表入 2.3(等级 Likely:参数序推断+时长佐证)。
+- [x] **P2-2 标题按钮接入 SE**(成果 80):`TitleButton.hovered` 边沿检测,
+      `update_title_buttons()` 悬停**进入**命中区播 `TITLE_SE_HOVER`
+      (sse02,保持不重复);`poll_title_menu()` 命中播
+      `TITLE_SE_DECIDE`(sse03);新增 `play_sysse()`(空前缀 resolve,
+      未命中记录决策不出声);`Audio::play_se` 带 name + `se_log`
+      决策留痕(上限 32)。`_na` 灰钮沿用 active 门控:不响不响应。
+      验证:`cargo test -p yuris-player-core` 8 测(新增 3:悬停边沿/
+      点击决定音/灰钮静默,最小 GroupVm 夹具);workspace 全绿;
+      release 构建通过;**实机目测待用户确认**。
 
 ### P3 功能补全
 
@@ -151,5 +180,8 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
 ## 5. 取证附件
 
 - 提取工具:`crates/yuris-vm/examples/tmp_extract.rs`(播放器同路径 `read_image_bytes`);
+- SE 映射工具(成果 80):`crates/yuris-vm/examples/tmp_sse_scan.rs`(全语料
+  sse 扫描+组归属)、`tmp_sse_count.rs`(槽位级计数)、
+  `crates/yuris-resource/examples/tmp_se_duration.rs`(symphonia 时长);
 - 三态样张:`/tmp/title_btn/cgsys_title_btn_start_{off,on,over}.png`、`btn_lastload_na.png`、`btn_arasuji_off.png`;
 - 剧本转储:`scenario_start.txt`(889 B)/ `start.txt`(54 B)/ `ara.txt`(18061 B),工具 `/tmp/dump_sc.py`。

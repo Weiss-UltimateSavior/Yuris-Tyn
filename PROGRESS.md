@@ -3405,6 +3405,57 @@ YSTB header→part1 命令组→槽位表→content 窗口 `[op:u8][len:u16][ope
 
 ***
 
+## 2026-09-08 标题按钮 SE 反馈(P2,成果 80)
+
+### 成果 80:sse 音效映射建立 + 标题按钮悬停/决定音接入 —— **Confirmed(绑定面)/Likely(语义角色)/Unknown(sse01/04/05)**
+
+**取证**(工具入库可复现:`crates/yuris-vm/examples/tmp_sse_scan.rs` bn.ypf 全语料
+YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` 槽位级唯一参数
+窗口精确计数;`crates/yuris-resource/examples/tmp_se_duration.rs` symphonia 时长):
+
+1. **es.BT.SE.SET 双参绑定**(槽位级实证):按钮宏以**槽 B0=0x21 = 悬停音、
+   槽 B0=0x22 = 决定/取消音**绑定两个 sysse 路径。全语料唯一参数窗口计数:
+   sse02×1075(29 文件)/ sse03×1031(28)/ sse06×70(19)/ sse01×4、
+   sse04×6、sse05×6(均仅 yst00013)。
+2. **映射**:槽 0x21 **恒 sse02**(0.086s,显著短促 = 悬停音特征,其余
+   0.30~0.39s);槽 0x22 ∈ {**sse03**(普通按钮,决定音)、**sse06**
+   (BTN.BACK/戻る型,取消音 —— yst00247 组586 实证,与 KEY.SET
+   MOUSE_R/BS/SPACE 同组)}。「参数1=悬停/参数2=决定」角色指派 = Likely
+   (参数序推断+时长佐证;引擎播放时机未 watch 取证)。
+3. **sse01/04/05 无静态按钮绑定**:仅出现在 yst00013 IF 条件表达式
+   `$1306[@1761] == "sysse/sse0X" && @1762 == 1 → es.SSE77.*` —— 字符串数组
+   $1306 运行期队列动态派发,写入方未逆向,**Unknown 不猜**。
+4. **sc.ypf 剧本 0 真引用**(命中全为 pressed/crosses 等英文子串假阳性)。
+5. 方法论记录:字节级扫描的行级 grep 计数受「池重叠窗口重复 dump」污染
+   (同一组 4 次命中 → 4 次 dump),须按(文件,组)去重或直接槽位级计数。
+
+**实现**(P2-2;`yuris-player-core`):
+
+- `TitleButton` 增 `hovered`:`update_title_buttons()` 悬停**进入**命中区
+  边沿播 `TITLE_SE_HOVER`(="sse02";保持不重复,离开再进再响);
+- `poll_title_menu()` 命中播 `TITLE_SE_DECIDE`(="sse03")后返回动作;
+  `_na` 灰钮沿用 active 门控不响不响应;
+- 新增 `play_sysse()`(空前缀 resolve_audio;未命中记录决策不出声)与
+  `Audio::se_log` 决策留痕(上限 32;`play_se` 带 name —— 空数据仅记录)。
+
+**验证**:
+
+- `cargo test -p yuris-player-core` **8 通过**(新增 3:
+  `title_hover_se_fires_on_enter_edge_only` / `title_click_plays_decide_se` /
+  `title_na_button_is_silent`;最小合成 YSTB 构造 GroupVm 夹具 + 空音频包下
+  经 `se_log` 断言);
+- `cargo test --workspace` 全绿;`cargo build --release -p yuris-cli` 通过;
+- **实机(待用户)**:标题悬停按钮出短促音、点击出决定音、CONTINUE 灰钮
+  无声不响应。
+
+### 关联
+
+- title-menu-plan.md:P2-1/P2-2 勾选,G5 关闭,§2.3 映射表;P3(LOAD/EXTRA
+  画面、END 确认框、config/manual/web 取舍)遗留。
+- 结论汇总表不变(本条为播放器反馈层,无逆向结论变更;映射等级 Likely)。
+
+***
+
 ## 更新约定
 
 每次更新本文件时：

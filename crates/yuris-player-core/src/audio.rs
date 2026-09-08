@@ -18,6 +18,8 @@ pub struct Audio {
     cur_bgm: Option<String>,
     /// 主音量(\BGM(,800) → 0.8)。
     bgm_volume: f32,
+    /// 最近 SE 播放决策留痕(含标题按钮音;上限 32,测试断言/观测用)。
+    pub se_log: Vec<String>,
 }
 
 impl Audio {
@@ -30,6 +32,7 @@ impl Audio {
                 voice: None,
                 cur_bgm: None,
                 bgm_volume: 1.0,
+                se_log: Vec::new(),
             },
             Err(e) => {
                 eprintln!("[audio] 无输出设备,音频降级: {e}");
@@ -40,6 +43,7 @@ impl Audio {
                     voice: None,
                     cur_bgm: None,
                     bgm_volume: 1.0,
+                    se_log: Vec::new(),
                 }
             }
         }
@@ -100,8 +104,15 @@ impl Audio {
         eprintln!("[audio] voice {name}");
     }
 
-    /// 播 SE(一次性;不抢占)。
-    pub fn play_se(&mut self, data: Vec<u8>) {
+    /// 播 SE(一次性;不抢占;空数据 = 仅记录决策不出声)。
+    pub fn play_se(&mut self, name: &str, data: Vec<u8>) {
+        if self.se_log.len() >= 32 {
+            self.se_log.remove(0);
+        }
+        self.se_log.push(name.to_string());
+        if data.is_empty() {
+            return;
+        }
         let Some(handle) = &self.handle else { return };
         let Ok(sink) = Sink::try_new(handle) else {
             return;
