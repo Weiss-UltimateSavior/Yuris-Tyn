@@ -228,6 +228,12 @@ impl ScenarioPlayer {
         self.active_choices.as_ref().map(|v| v.len()).unwrap_or(0)
     }
 
+    /// 是否处于标题菜单等待(P8.2b:VM UI 层过滤 —— 内置标题接管视觉,
+    /// 标题等待期不建 VM CG 层,避免与 yst00259 的双份按钮)。
+    pub fn in_title_menu(&self) -> bool {
+        matches!(self.wait, Some(Wait::TitleMenu))
+    }
+
     pub fn running(&self) -> bool {
         !self.done
     }

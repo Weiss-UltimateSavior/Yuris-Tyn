@@ -70,23 +70,64 @@
 
 ## 3. 修复路线(P8.2b:VM UI 层接入)
 
-按风险递增分四步,每步可独立实机验收:
+> 状态:第 1/2 步已实装(成果 82,2026-09-08);首验发现位置/生命周期两问题,
+> 同日二次修正(见 3.1);第 3/4 步待实机对拍。
 
-- [ ] **第 1 步 过滤规则**(B3 正解):
-  - `file` 路径含 `cgsys\debug\` → 跳过(引擎 debug 覆盖层);
-  - `Wait::TitleMenu` 存续期间全部跳过(内置标题接管视觉,避免双份按钮);
-  - 台词窗部件(tip_meswindow 族)与 `show_window_frame` 二选一(建议保留
-    VM 出窗体、scenario 只出文字,对齐原生;过渡期可先共存观察)。
-- [ ] **第 2 步 接桥**:`consume_events` 对未过滤的 `Cg` 事件调
-  `bridge.scene_mut().upsert_layer(...)`(id=fnv(id)、x/y/z=position、
-  resource=fnv(id)、z 取 60 段起步),`CgEnd` → `hide_layer`;纹理已在
-  `loaded`。风险点:`file` 为空/None 的 CG(成果 62:无 FILE 槽的注册件
-  —— 如 BT.OVER 族)无纹理可挂,先记录跳过。
-- [ ] **第 3 步 z 序与消息窗合流**:截图对拍定 VM 层 z(初值 60:高于
-  立绘 10、低于台词窗 80);台词窗改由 VM 部件 + scenario 文字合成。
-- [ ] **第 4 步 按钮功能验证**:接入后实机点 backlog/auto/skip/config,
-  观察是否经既有输入注入(@133/@138 + $55[1])直接生效(2.4#4);
-  生效则 P9.2 大幅减负,不生效再逆向 es.BT 命中链。
+### 3.1 首验勘误(2026-09-08,实机截图驱动)
+
+- **问题 A「UI 堆在厂商 LOGO 左上角 (0,0)」**:
+  - 位置:es.BT 部件坐标是**注册后**由 `es.BT.XY.SET` 单独设置 —— 宏体转储
+    (`tmp_label_lookup.rs` YSLB 查址 s9 pc=64 + `tmp_yst_dump.rs` 组1083)
+    实证 XY.SET 的实参转发给 **CGACT(0x02) 槽 B0=0x0c=X / 0x0d=Y**
+    (XY.SET(531,10) → CGACT 槽 0x0c=531/0x0d=10),而 VM 原把 CGACT 当
+    「不触碰注册表」处理 → 坐标全丢 → 全部 (0,0) 叠加;
+  - 时机:厂商期场景门控只挡了标题等待期,挡不住厂商 CG 段。
+- **问题 B「进入游戏后没有」**:boot 期部件注册时被过滤(未建层),且
+  `reset_title_layers` 会隐藏 VM UI 层 → 进游戏后既无层也不会再发事件。
+
+**二次修正**:
+1. **VM**:`CGACT` 槽 0x0c/0x0d → patch `cg_registry.x/y`(命中已注册 CG);
+   新增 `GroupVm::cg_registry_snapshot()`(名称字节 + x/y)。
+2. **门控升级**:`title_seen`(title_screen 置位)∧ 非标题等待期才放行 ——
+   厂商 CG 段完全不建层;
+3. **重放**:`rebuild_vm_ui()` —— 放行沿(false→true,即进游戏)按注册表
+   重建 VM UI 层(纹理 fnv(名) 命中已预载集才建),boot 期被过滤的部件恢复;
+4. **生命周期分层**:`reset_title_layers` 不再隐藏 VM UI 层(系统 UI 跨
+   场景持续,原生语义);隐藏移入 `title_screen`(标题接管视觉)。
+5. **勘误 5(二次实机:`VM UI 重放 0 层`)**:首版把通道过滤放在了纹理
+   预载之前 —— boot 期(门控关)一条纹理都没载,重放按「已预载」判定
+   全跳过。修正:**预载与建层解耦**(非 debug 一律预载,建层才受门控)。
+
+- [x] **第 1 步 过滤规则**(成果 82,`vm_ui_layer_allowed`):
+  - `file` 路径含 `debug` → 跳过(引擎 debug 覆盖层);
+  - `Wait::TitleMenu` 存续期间全部跳过(`ScenarioPlayer::in_title_menu()`
+    → `Player::tick` 传 `allow_vm_ui=false`;内置标题接管视觉,避免
+    yst00259 双份按钮);
+  - 通道白名单:**仅 `cgsys/main/`**(消息窗部件/常驻按钮;title/config/
+    extra 屏由内置子画面接管);`file` 空/None 的注册件(成果 62
+    BT.OVER 族)跳过。
+- [x] **第 2 步 接桥**(成果 82):`consume_events` 对通过过滤的 `Cg`
+  事件 `upsert_layer`(id=fnv(id)、x/y=position 槽 4/5、z 固定 60、
+  resource=fnv(id));`CgEnd` → `hide_layer(fnv(id))`;纹理沿用既有
+  预载;`vm_ui_layers` 登记层 id,标题进入时统一隐藏。
+  层位置 = 原生尺寸逻辑坐标(1920×1080),slot z 未用作层序(不猜)。
+- [x] **第 2.5 步 位置/生命周期修正**(勘误 4):CGACT 落库 + 注册表重放 +
+  title_seen 门控(见 3.1)。
+- [ ] **第 3 步 z 序与消息窗合流**(待实机):VM 层初值 z=60(高于立绘
+  10、低于台词窗 80);截图对拍后调整;台词窗是否改由 VM 部件 +
+  scenario 文字合成,按对拍结果定。
+- [ ] **第 4 步 按钮功能验证**(待实机):backlog/auto/skip/config 点击
+  是否经既有输入注入(@133/@138 + $55[1])直接生效;生效则 P9.2 大幅
+  减负,不生效再逆向 es.BT 命中链。
+
+### 实装记录(成果 82)
+
+- `consume_events(allow_vm_ui)` 重写:过滤 → 预载 → `upsert_layer`;
+  `CgEnd` 隐藏;`vm_ui_layers` 登记与标题进入时统一清理;
+- `ScenarioPlayer::in_title_menu()` 公开标题等待态;
+- `GroupVm::cg_registry_snapshot()` + CGACT 槽 0x0c/0x0d 落库;
+- `PlayerCore::rebuild_vm_ui()` 注册表重放(门控沿触发);
+- 单测 `vm_ui_filter_rules`(debug/标题期/非 main 三条规则)。
 
 ### 验收标准
 

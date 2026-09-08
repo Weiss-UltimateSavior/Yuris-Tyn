@@ -660,6 +660,15 @@ pub struct GroupVm {
 }
 
 impl GroupVm {
+    /// CG 注册表快照(P8.2b 重放:名称 SJIS 字节 + 注册 x/y;注册序)。
+    /// 播放器进游戏时按此重建 VM UI 层(纹理已在播放器侧按 fnv(名) 预载)。
+    pub fn cg_registry_snapshot(&self) -> Vec<(Vec<u8>, i64, i64)> {
+        self.cg_registry
+            .iter()
+            .map(|(k, v)| (k.clone(), v.x, v.y))
+            .collect()
+    }
+
     /// 装载脚本。组模型校验失败(非 v555 形态)→ `Err`。
     ///
     /// 帧栈预置**基帧**(引擎 record[0],GOSUB 反编译 004428c0/0044b418
@@ -2397,9 +2406,14 @@ impl GroupVm {
                 }
                 cmd::CGACT => {
                     // 引擎 CMDH_0042607c(12466B):71 参,运行期图形管线合成。
-                    // ID(B0=0,字符串)记录;其余参数按 B0 槽求值摘要;
-                    // 不触碰图形状态(未逆向),记录后继续(非 strict 同)。
+                    // ID(B0=0,字符串)记录;B0=0x0c/0x0d = X/Y(成果 82 勘误 4:
+                    // es.BT.XY.SET 宏体实证 —— yst00009 组1083 将 XY.SET(531,10)
+                    // 的实参转发给 CGACT 槽 0x0c=531/0x0d=10)→ 命中已注册
+                    // CG 即 patch 注册表 x/y(后续 CGINFO 查询/重放可见)。
                     let mut id = None;
+                    let mut id_bytes: Option<Vec<u8>> = None;
+                    let mut act_x = None;
+                    let mut act_y = None;
                     let mut evaluated: Vec<(u8, String)> = Vec::new();
                     for w in &windows {
                         if w.len == 0 {
@@ -2407,12 +2421,36 @@ impl GroupVm {
                         }
                         let slot = (w.tag & 0xff) as u8;
                         if let Some(v) = self.eval_window_condition(Some(w))? {
-                            if slot == 0 {
-                                if let Value::Str(_) = v {
-                                    id = Some(v.str_as_string());
+                            match slot {
+                                0 => {
+                                    if let Value::Str(b) = &v {
+                                        id_bytes = Some(b.clone());
+                                        id = Some(v.str_as_string());
+                                    }
                                 }
+                                0x0c => {
+                                    if let Value::Int(n) = v {
+                                        act_x = Some(n);
+                                    }
+                                }
+                                0x0d => {
+                                    if let Value::Int(n) = v {
+                                        act_y = Some(n);
+                                    }
+                                }
+                                _ => {}
                             }
                             evaluated.push((slot, value_summary(&v)));
+                        }
+                    }
+                    if let Some(b) = id_bytes {
+                        if let Some(st) = self.cg_registry.get_mut(&b) {
+                            if let Some(x) = act_x {
+                                st.x = x;
+                            }
+                            if let Some(y) = act_y {
+                                st.y = y;
+                            }
                         }
                     }
                     self.events.push(VmEvent::CgAct {

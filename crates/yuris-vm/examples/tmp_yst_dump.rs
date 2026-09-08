@@ -31,7 +31,13 @@ fn main() {
             let wins: Vec<String> = y
                 .group_windows(firsts[gi], g)
                 .iter()
-                .map(|w| ascii_line(&y.window_bytes_pooled_copy(w).unwrap_or_default()))
+                .map(|w| {
+                    format!(
+                        "[B0={:02x}] {}",
+                        (w.tag & 0xFF) as u8,
+                        ascii_line(&y.window_bytes_pooled_copy(w).unwrap_or_default())
+                    )
+                })
                 .collect();
             let joined = wins.join(" | ");
             if needles.iter().any(|n| joined.contains(n)) {

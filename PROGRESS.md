@@ -3540,6 +3540,57 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
 
 ***
 
+## 2026-09-08 游戏内 UI 接入(P8.2b,成果 82)
+
+### 成果 82:VM CG 通道接入场景 —— 游戏内 UI 部件上屏 —— **Confirmed(代码+单测)/Likely(位置与 z 序,待实机对拍)**
+
+**问题与分析**:正篇对话中原生游戏内 UI 全缺(消息窗部件/常驻系统按钮/
+音量条)。根因 = 成果 67 的 P8 集成取舍:`consume_events` 整体抑制 VM CG
+通道(「不进场景」注释)。而该通道正是 UI 数据源(成果 62:s9=UI/按钮/
+精灵引擎;成果 73:VM 复活后控件请求序列)。且接桥能力早已就绪:
+`VmEvent::Cg` 带 id/position/file、`SceneBridge` 的 Cg→Layer/CgEnd→hide
+映射(成果 48)、纹理预载(rid=fnv(id) 与 bridge 哈希一致)。全程分析
+见 **`docs/in-game-ui-plan.md`**(新建,含次级缺口表与风险登记)。
+
+**实现**(第 1/2 步;第 3/4 步待实机):
+
+- **过滤** `vm_ui_layer_allowed`:① `debug` 路径跳过(成果 69 B3);
+  ② 标题等待期全跳过(`ScenarioPlayer::in_title_menu()` 新公开 →
+  `Player::tick` 传 `allow_vm_ui=false`,内置标题接管视觉,防 yst00259
+  双份按钮);③ 通道白名单仅 `cgsys/main/`(消息窗部件/常驻按钮);
+  ④ `file` 空/None 注册件跳过(成果 62 BT.OVER 族);
+- **接桥**:通过过滤的 `Cg` → `upsert_layer`(层 id = 资源哈希 fnv(id),
+  x/y = position 槽 4/5,z 固定 60 段 —— 高于立绘 10、低于台词窗 80,
+  slot z 不猜不用);`CgEnd` → `hide_layer(fnv(id))`;重复 CG.SET =
+  upsert 幂等;`vm_ui_layers` 登记层 id,`reset_title_layers` 统一隐藏
+  (残留同族防御)。
+- **勘误 4(首验截图:厂商期 (0,0) 堆叠 + 进游戏无 UI)**:
+  ① es.BT 部件坐标由 `es.BT.XY.SET` 注册后单独设置 —— YSLB 查址(s9 pc64)+
+  宏体转储(yst00009 组1083)实证 XY.SET 实参转发 **CGACT 槽 B0=0x0c=X /
+  0x0d=Y**,而 VM 原视 CGACT 为不触碰注册表 → 坐标全丢;修复:CGACT 槽
+  0x0c/0x0d patch `cg_registry.x/y`(Likely:宏实参序相关,引擎处理器未反编译);
+  ② 厂商期未门控 + reset 隐藏 VM UI 层 → boot 注册件进游戏后既无层也不再发
+  事件;修复:`title_seen` 门控(厂商段不建层)+ `rebuild_vm_ui()` 注册表
+  重放(进游戏沿触发)+ 生命周期分层(reset 不隐藏 VM UI 层,隐藏移入
+  title_screen —— 系统 UI 跨场景持续,原生语义)。工具:`tmp_label_lookup.rs`
+  (YSLB 查址)、`tmp_yst_dump.rs` 增 B0 tag 输出。
+
+**验证**:
+
+- `cargo test -p yuris-player-core` **13 通过**(新增 `vm_ui_filter_rules`:
+  debug/标题期/非 main 三规则);
+- workspace **49 套件全绿**;release 构建通过;
+- **实机(待用户)**:正篇对话中消息窗部件/常驻按钮是否上屏、位置是否
+  正确、backlog/auto 点击是否经既有输入注入直接生效(2.4#4 Hypothesis)。
+
+### 关联
+
+- docs/in-game-ui-plan.md:第 1/2 步勾选 + 实装记录;第 3/4 步待实机;
+- 若按钮免费生效,P9.2(输入)范围大幅缩减;若 z 序/位置错,按截图对拍
+  调整(第 3 步)。
+
+***
+
 ## 更新约定
 
 每次更新本文件时：

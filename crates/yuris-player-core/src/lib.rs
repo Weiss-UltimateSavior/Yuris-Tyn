@@ -80,6 +80,19 @@ fn fmt_unix_time(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}")
 }
 
+/// VM UI 层过滤(P8.2b 第 1 步):debug 覆盖层与非 main 通道不建层。
+/// 游戏内 UI 部件都在 `cgsys/main/`(消息窗部件/常驻按钮,成果 68 实证
+/// txspace 同族);title/config/extra 屏由内置子画面接管,避免双份 UI。
+fn vm_ui_layer_allowed(path_lower: &str, allow_vm_ui: bool) -> bool {
+    if !allow_vm_ui {
+        return false; // 标题菜单等待期:内置标题接管视觉
+    }
+    if path_lower.contains("debug") {
+        return false; // 引擎 debug 覆盖层(成果 69 B3)
+    }
+    path_lower.contains(r"cgsys\main\") || path_lower.contains("cgsys/main/")
+}
+
 fn scene_mut_layer(scene: &mut yuris_scene::Scene, id: u64) -> Option<&mut Layer> {
     scene.layers.iter_mut().find(|l| l.id == id)
 }
@@ -263,6 +276,12 @@ pub struct PlayerCore {
     /// EXTRA BGM:曲目名(去目录/扩展名)与列表页码。
     pub bgm_tracks: Vec<String>,
     pub bgm_page: usize,
+    /// VM CG 通道建的场景层 id(P8.2b;标题进入时统一隐藏)。
+    pub vm_ui_layers: Vec<u64>,
+    /// 已进入过标题画面(P8.2b 门控:厂商 CG 阶段不建 VM UI 层)。
+    pub title_seen: bool,
+    /// 上一帧 VM UI 门控值(false→true 沿触发注册表重放)。
+    pub vm_ui_allowed_prev: bool,
     #[allow(dead_code)]
     pub game_dir: std::path::PathBuf,
 }
@@ -300,9 +319,9 @@ impl PlayerCore {
     }
 
     /// 消费 VM 事件流 → 场景;装载新 CG 图像。
-    /// 注(P8 集成取舍):VM 的 CG 图层(含引擎 debug 覆盖层)不进场景 ——
-    /// 视觉由 scenario 层驱动;VM 仅维护系统状态(变量/流程/文本事件)。
-    fn consume_events(&mut self) {
+    /// P8.2b(成果 82):VM CG 通道接入场景 —— 游戏内 UI(es.BT.* 部件)
+    /// 经此上屏;debug 覆盖层与标题等待期过滤(详见 docs/in-game-ui-plan.md)。
+    fn consume_events(&mut self, allow_vm_ui: bool) {
         let events = self.vm.events();
         let fresh = &events[self.events_cursor..];
         self.events_cursor = events.len();
@@ -316,22 +335,56 @@ impl PlayerCore {
         }
         let mut to_load: Vec<(u64, Vec<u8>)> = Vec::new();
         for ev in fresh {
-            if let yuris_vm::VmEvent::Cg { pc, script_id, id, file, .. } = ev {
+            if let yuris_vm::VmEvent::Cg { pc, script_id, id, position, file, .. } = ev {
                 let Some(name) = id else { continue };
-                let rid = fnv1a(name.as_bytes());
-                if self.loaded.contains(&rid) {
-                    continue;
-                }
                 let Some(f) = file else { continue };
                 if f.is_empty() {
-                    continue;
+                    continue; // 注册件(成果 62 BT.OVER 族 FILE="")无纹理,不建层
                 }
                 let path = String::from_utf8_lossy(f).into_owned();
-                match self.index.read_image_bytes(&path) {
-                    Some(data) => to_load.push((rid, data)),
-                    None => eprintln!(
-                        "[player] CG 图像解析失败:{path} (s{script_id} pc={pc})"
-                    ),
+                let lower = path.to_ascii_lowercase();
+                if lower.contains("debug") {
+                    continue; // 引擎 debug 覆盖层:纹理也不载
+                }
+                // 预载与建层解耦(P8.2b 勘误 5):boot 期(门控关)也要预载,
+                // 否则进游戏时注册表重放找不到纹理 → 永远 0 层。
+                let rid = fnv1a(name.as_bytes());
+                if !self.loaded.contains(&rid) {
+                    match self.index.read_image_bytes(&path) {
+                        Some(data) => to_load.push((rid, data)),
+                        None => eprintln!(
+                            "[player] CG 图像解析失败:{path} (s{script_id} pc={pc})"
+                        ),
+                    }
+                }
+                if !vm_ui_layer_allowed(&lower, allow_vm_ui) {
+                    continue;
+                }
+                // 建层(P8.2b 第 2 步):层 id = 资源哈希(bridge 语义),
+                // z=60 段(高于立绘 10、低于台词窗 80;初值待截图对拍)。
+                // position 槽 4/5/6 → x/y(Likely,成果 48 表);重复
+                // CG.SET = upsert 幂等(仅 patch 位置)。
+                let (x, y, _z) = position.unwrap_or((0, 0, 0));
+                if !self.vm_ui_layers.contains(&rid) {
+                    self.vm_ui_layers.push(rid);
+                }
+                let layer = Layer {
+                    id: rid,
+                    z: 60,
+                    visible: true,
+                    x: x as f32,
+                    y: y as f32,
+                    scale_x: 1.0,
+                    scale_y: 1.0,
+                    alpha: 1.0,
+                    rotation: 0.0,
+                    resource: Some(ResourceId(rid)),
+                };
+                self.bridge.scene_mut().upsert_layer(layer);
+            }
+            if let yuris_vm::VmEvent::CgEnd { id, .. } = ev {
+                if let Some(name) = id {
+                    self.bridge.scene_mut().hide_layer(fnv1a(name.as_bytes()));
                 }
             }
         }
@@ -346,6 +399,36 @@ impl PlayerCore {
                 }
             }
         }
+    }
+
+    /// 注册表重放(P8.2b):进入游戏时按 VM cg_registry 重建 VM UI 层
+    /// (boot 期被过滤的部件在此恢复;纹理按 fnv(名) 命中已预载集才建层)。
+    fn rebuild_vm_ui(&mut self) {
+        let mut n = 0usize;
+        for (name, x, y) in self.vm.cg_registry_snapshot() {
+            let rid = fnv1a(&name);
+            if !self.loaded.contains(&rid) {
+                continue; // 无纹理(预载期被过滤/解析失败)不建层
+            }
+            if !self.vm_ui_layers.contains(&rid) {
+                self.vm_ui_layers.push(rid);
+            }
+            let layer = Layer {
+                id: rid,
+                z: 60,
+                visible: true,
+                x: x as f32,
+                y: y as f32,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                alpha: 1.0,
+                rotation: 0.0,
+                resource: Some(ResourceId(rid)),
+            };
+            self.bridge.scene_mut().upsert_layer(layer);
+            n += 1;
+        }
+        eprintln!("[player] VM UI 重放 {n} 层");
     }
 
     /// 读 scenario 资源并上传;返回 ResourceId。
@@ -1555,6 +1638,13 @@ impl ScenarioHost for PlayerCore {
         // 内置标题:eyecatch/st 分层素材组合(bg01a + sir/han + logo + 真实按钮列)
         // 布局对齐真机截图(用户 2026-09-05 提供):银发左 / 双马尾中 / logo 右上 / 按钮右下
         self.reset_title_layers();
+        // 标题接管视觉:隐藏 VM UI 层(P8.2b;厂商期已门控不建,此处清
+        // 游戏中返回标题的可能残留)+ 置 title_seen(此后放行 VM UI)
+        let scene = self.bridge.scene_mut();
+        for id in self.vm_ui_layers.drain(..) {
+            scene.hide_layer(id);
+        }
+        self.title_seen = true;
         // 全屏底层(path, x, y, id)→ 拉伸全屏
         let layers: [(&str, i64, i64, u64); 5] = [
             ("eyecatch/st/bg01a", 0, 0, 0x5C_7000_0000),
@@ -1868,7 +1958,14 @@ impl Player {
             return;
         }
         core.drive_vm();
-        core.consume_events();
+        // VM UI 层门控(P8.2b):进过标题且非标题等待期才放行;
+        // false→true 沿 = 进入游戏 → 按注册表重放(boot 期被过滤的部件)
+        let allow_vm_ui = core.title_seen && !self.scenario.in_title_menu();
+        if allow_vm_ui && !core.vm_ui_allowed_prev {
+            core.rebuild_vm_ui();
+        }
+        core.vm_ui_allowed_prev = allow_vm_ui;
+        core.consume_events(allow_vm_ui);
         core.update_fade();
         core.update_sprite_fades();
         let clicked = std::mem::take(&mut core.clicked);
@@ -2103,6 +2200,9 @@ mod title_se_tests {
             cg_view: None,
             bgm_tracks: Vec::new(),
             bgm_page: 0,
+            vm_ui_layers: Vec::new(),
+            title_seen: false,
+            vm_ui_allowed_prev: false,
             game_dir: std::path::PathBuf::new(),
         }
     }
@@ -2206,6 +2306,9 @@ mod subui_tests {
             cg_view: None,
             bgm_tracks: Vec::new(),
             bgm_page: 0,
+            vm_ui_layers: Vec::new(),
+            title_seen: false,
+            vm_ui_allowed_prev: false,
             game_dir: std::path::PathBuf::new(),
         }
     }
@@ -2302,6 +2405,20 @@ mod subui_tests {
         );
         assert_eq!(core.audio.se_log.last().map(String::as_str), Some("sse03"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn vm_ui_filter_rules() {
+        // P8.2b 第 1 步(成果 82):debug 覆盖层/标题等待期/非 main 通道不建层
+        let main = "cgsys/main/button/type1/tip_meswindow";
+        let main_bs = r"cgsys\main\button\type1\tip_meswindow";
+        let debug = r"cgsys\debug\btn_back";
+        let title = "cgsys/title/btn_start_off";
+        assert!(vm_ui_layer_allowed(main, true));
+        assert!(vm_ui_layer_allowed(main_bs, true));
+        assert!(!vm_ui_layer_allowed(main, false)); // 标题等待期
+        assert!(!vm_ui_layer_allowed(debug, true)); // debug 覆盖层
+        assert!(!vm_ui_layer_allowed(title, true)); // 非 main 通道(内置标题接管)
     }
 
     #[test]
