@@ -11,7 +11,7 @@
 //! 依赖 winit 是经由 yuris-render 的 `Arc<winit::window::Window>`;winit 0.30
 //! 官方支持 Android(android-activity 后端),故本 crate 可直接复用于移动端。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -87,7 +87,7 @@ pub const TITLE_BTN_ON: usize = 1;
 /// 按下态。
 pub const TITLE_BTN_OVER: usize = 2;
 
-/// 标题按钮:命中区 + 三态资源 + 当前显示态(成果 78)。
+/// 标题按钮:命中区 + 三态资源 + 当前显示态(成果 78;坐标/绑定成果 79)。
 pub struct TitleButton {
     /// 命中区 rect = x,y,w,h(逻辑坐标,原生尺寸)。
     pub rect: [f32; 4],
@@ -97,6 +97,9 @@ pub struct TitleButton {
     pub rids: [Option<ResourceId>; 3],
     /// 当前显示态(TITLE_BTN_*)。
     pub shown: usize,
+    /// 可用性(false = `_na` 不可用态:单素材、无三态切换、点击无效 ——
+    /// 原生 es.BT 把无存档 CONTINUE 注册为 BTN.LLOAD.NA 独立按钮,成果 79)。
+    pub active: bool,
 }
 
 /// 播放核心(实现 ScenarioHost;与 scenario 分裂借用)。
@@ -137,6 +140,9 @@ pub struct PlayerCore {
     pub request_title_load: bool,
     /// 标题 END 请求(主循环消费后退出)。
     pub request_quit: bool,
+    /// 全局槽(\GO.G.IF 的 G=n;仿真内部存储 —— 引擎真值映射 Unknown/B5。
+    /// 成果 78 勘误:原 `@50[n]` 映射被运行时证伪,@50 dims=[1],idx≥1 越界)。
+    pub globals: HashMap<usize, i64>,
     #[allow(dead_code)]
     pub game_dir: std::path::PathBuf,
 }
@@ -244,6 +250,9 @@ impl PlayerCore {
         let clicked = self.frame_clicked;
         let mut updates: Vec<(u64, ResourceId)> = Vec::new();
         for b in &mut self.title_buttons {
+            if !b.active {
+                continue; // `_na` 灰化态:单素材,不参与三态(成果 79)
+            }
             let [x, y, w, h] = b.rect;
             let hover = cx >= x as i64
                 && cx < (x + w) as i64
@@ -686,13 +695,25 @@ impl ScenarioHost for PlayerCore {
         ];
         // 按钮列:三态素材 `cgsys/title/btn_{名}_{off,on,over}`(成果 78 图像
         // 实证);默认显示 `_off` 常态,悬停/按下由 update_title_buttons 切换。
-        let buttons: [(&str, i64, i64, u64); 5] = [
-            ("cgsys/title/btn_start", 1355, 479, 0x5C_7000_0005),
-            ("cgsys/title/btn_load", 1355, 582, 0x5C_7000_0006),
-            ("cgsys/title/btn_lastload", 1355, 670, 0x5C_7000_0007),
-            ("cgsys/title/btn_extra", 1319, 784, 0x5C_7000_0008),
-            ("cgsys/title/btn_end", 1611, 784, 0x5C_7000_0009),
+        // 坐标/绑定 = yst00259 es.BT.XY.SET/es.BT.SET 原生真值(成果 79):
+        // arasuji→BTN.START(2)、start→BTN.START(1)、extra(1314)/config(1477,
+        // 未实装)/end(1640) 同排 y=745。
+        let buttons: [(&str, i64, i64, u64); 6] = [
+            ("cgsys/title/btn_arasuji", 1393, 384, 0x5C_7000_000A),
+            ("cgsys/title/btn_start", 1393, 439, 0x5C_7000_0005),
+            ("cgsys/title/btn_load", 1393, 533, 0x5C_7000_0006),
+            ("cgsys/title/btn_lastload", 1393, 627, 0x5C_7000_0007),
+            ("cgsys/title/btn_extra", 1314, 745, 0x5C_7000_0008),
+            ("cgsys/title/btn_end", 1640, 745, 0x5C_7000_0009),
         ];
+        // 无存档判定(P1-4):快存文件不存在 → CONTINUE 用 `_na` 灰化态且
+        // 点击无效(原生 es.BT 按 save/*.sd 存在性条件注册 BTN.LLOAD vs
+        // BTN.LLOAD.NA 两个同位按钮,成果 79;本实现以快存文件为判据)。
+        let has_save = self
+            .game_dir
+            .join("save")
+            .join("yskernel_qsave.json")
+            .is_file();
         let white = ResourceId(0x5C_0000_0005);
         if !self.loaded.contains(&white.0) {
             if let Some(b) = self.backend.as_mut() {
@@ -742,10 +763,16 @@ impl ScenarioHost for PlayerCore {
             scene.upsert_layer(layer);
         }
         for (base, x, y, id) in buttons {
-            // 三态预载(off/on/over;单态失败 = None,不切该态)
+            // CONTINUE 无存档 → `_na` 单素材灰化(无三态/点击无效,成果 79)。
+            let na = !has_save && base.ends_with("btn_lastload");
             let mut rids: [Option<ResourceId>; 3] = [None, None, None];
-            for (i, suffix) in ["_off", "_on", "_over"].iter().enumerate() {
-                rids[i] = self.load_scenario_image(&format!("{base}{suffix}"));
+            if na {
+                rids[TITLE_BTN_OFF] = self.load_scenario_image(&format!("{base}_na"));
+            } else {
+                // 三态预载(off/on/over;单态失败 = None,不切该态)
+                for (i, suffix) in ["_off", "_on", "_over"].iter().enumerate() {
+                    rids[i] = self.load_scenario_image(&format!("{base}{suffix}"));
+                }
             }
             let Some(rid0) = rids[TITLE_BTN_OFF] else {
                 eprintln!("[scenario] 标题按钮未命中: {base}_off");
@@ -762,6 +789,7 @@ impl ScenarioHost for PlayerCore {
                 id,
                 rids,
                 shown: TITLE_BTN_OFF,
+                active: !na,
             });
             let layer = Layer {
                 id,
@@ -779,7 +807,8 @@ impl ScenarioHost for PlayerCore {
             scene.upsert_layer(layer);
         }
         eprintln!(
-            "[scenario] 标题画面(eyecatch 分层组合;按钮菜单:START/LOAD/LASTLOAD/EXTRA/END;三态 _off/_on/_over)"
+            "[scenario] 标题画面(eyecatch 分层组合;按钮菜单:ARASUJI/START/LOAD/LASTLOAD/EXTRA/END; \
+             原生 es.BT 坐标;存档={has_save};三态 _off/_on/_over)"
         );
     }
 
@@ -871,31 +900,16 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn global(&self, slot: usize) -> i64 {
-        // \GO.G.IF 的 G=n:全局槽 ≈ @50 数组(变量间接访问 @50[x],成果 50)
-        let r = VarRef {
-            space: yuris_value::VarSpace::At,
-            id: 50,
-        };
-        match self.vm.store().get_elem(&r, &[slot as i64]) {
-            Ok(Value::Int(n)) => *n,
-            _ => 0,
-        }
+        // \GO.G.IF 的 G=n:仿真内部全局槽(成果 78 勘误:原 @50[n] 映射被
+        // 运行时证伪 —— @50 dims=[1],idx≥1 越界;引擎真值存储 Unknown,
+        // 待 es.BT.* 宏链逆向(B5)。本实现仅要求写入/读取内部自洽)。
+        self.globals.get(&slot).copied().unwrap_or(0)
     }
 
     fn set_global(&mut self, slot: usize, value: i64) {
-        // \TITLE 按钮选择写入(成果 78):与 global() 同槽(@50[slot]);
-        // @50 未声明时记日志,流程退回剧本兜底 \GO(SCENARIO_MAIN)(不劣于旧态)。
-        let r = VarRef {
-            space: yuris_value::VarSpace::At,
-            id: 50,
-        };
-        if let Err(e) = self
-            .vm
-            .store_mut()
-            .set_elem(&r, &[slot as i64], Value::Int(value))
-        {
-            eprintln!("[scenario] 写 G{slot}={value} 失败: {e}");
-        }
+        // \TITLE 按钮选择写入(成果 78);与 global() 同一仿真内部槽。
+        self.globals.insert(slot, value);
+        eprintln!("[scenario] 写 G{slot}={value}");
     }
 
     fn log(&mut self, msg: &str) {
@@ -908,6 +922,9 @@ impl ScenarioHost for PlayerCore {
         }
         let (cx, cy) = self.cursor_logical;
         for b in &self.title_buttons {
+            if !b.active {
+                continue; // `_na` 灰化态:点击无效(原生 BTN.LLOAD.NA,成果 79)
+            }
             let [x, y, w, h] = b.rect;
             if cx >= x as i64
                 && cx < (x + w) as i64
@@ -915,6 +932,7 @@ impl ScenarioHost for PlayerCore {
                 && cy < (y + h) as i64
             {
                 let act = match b.id {
+                    0x5C_7000_000A => TitleMenuAction::Outline,
                     0x5C_7000_0005 => TitleMenuAction::Start,
                     0x5C_7000_0006 => TitleMenuAction::Load,
                     0x5C_7000_0007 => TitleMenuAction::LastLoad,
@@ -1012,16 +1030,10 @@ impl Player {
             return;
         };
         let mut globals = Vec::new();
-        let r = VarRef {
-            space: yuris_value::VarSpace::At,
-            id: 50,
-        };
+        // 全局槽 = 仿真内部存储(成果 78 勘误:原 @50 映射被证伪);
+        // JSON 形状不变(globals[0..64]),槽 i → 下标 i。
         for i in 0..64 {
-            let v = match self.core.vm.store().get_elem(&r, &[i]) {
-                Ok(Value::Int(n)) => *n,
-                _ => 0,
-            };
-            globals.push(v);
+            globals.push(self.core.globals.get(&i).copied().unwrap_or(0));
         }
         let doc = serde_json::json!({
             "file": file, "label": label, "globals": globals,
@@ -1047,14 +1059,11 @@ impl Player {
             eprintln!("[load] 快存损坏");
             return;
         };
-        let r = VarRef {
-            space: yuris_value::VarSpace::At,
-            id: 50,
-        };
+        // 全局槽恢复 = 仿真内部存储(成果 78 勘误;JSON 形状不变)。
         if let Some(arr) = doc["globals"].as_array() {
             for (i, v) in arr.iter().enumerate() {
                 if let Some(n) = v.as_i64() {
-                    let _ = self.core.vm.store_mut().set_elem(&r, &[i as i64], Value::Int(n));
+                    self.core.globals.insert(i, n);
                 }
             }
         }

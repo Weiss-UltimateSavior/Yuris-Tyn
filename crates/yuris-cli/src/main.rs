@@ -140,6 +140,7 @@ fn main() {
         title_buttons: Vec::new(),
         request_title_load: false,
         request_quit: false,
+        globals: std::collections::HashMap::new(),
         game_dir: game_dir.clone(),
     };
     let mut player = Player {

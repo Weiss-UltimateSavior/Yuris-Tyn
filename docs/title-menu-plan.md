@@ -1,6 +1,6 @@
 # 标题界面按钮问题分析与计划
 
-> 状态:根因已定位并修复主体(成果 76);悬停/SE/功能面存在遗留差距。
+> 状态:P1 保真度核心已完成(成果 78/79);悬停/SE/功能面存在遗留差距(P2/P3)。
 > 方法:证据等级驱动逆向(Confirmed / Likely / Hypothesis / Unknown)。
 > 取证日期:2026-09-08。
 
@@ -54,6 +54,36 @@
 - 播放器标题流程(`title_screen`/`poll_title_menu`)**无任何 `play_se` 调用**(代码检索实证);
 - sse01~06 与 悬停音/决定音/取消音 的具体映射 **Unknown**(需逐个试听或从引擎/脚本引用验证)。
 
+**补充取证(2026-09-08,bn.ypf yst00259)**:标题菜单由 **YSTB 脚本驱动**
+—— `yst00259.ybn` 引用 `title/btn_start`(es.BT.CG.SET)+ `BTN.START`
+(es.BT.NAME.SET)+ **`es.BT.SE.SET(sysse/sse02, sysse/sse03)`** —— 按钮
+宏绑定了两个系统音效(疑悬停/决定,试听后可升级映射为 Likely)。
+es.BT.* 宏族 = s9 系统宏库按钮工具箱(CG/XY/Z/SE/SET/NAME/GROUP.SET)。
+
+**全量解码(2026-09-08,成果 79,工具 `/tmp/dump_ystb_groups.py`)**:
+YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
+
+| 按钮(★=NAME.SET Shift-JIS) | XY(es.BT.XY.SET) | CG | 绑定(es.BT.SET) |
+|---|---|---|---|
+| ★あらすじ(OUTLINE) | (1393,384) | btn_arasuji(312×29) | **BTN.START,参数 2** |
+| ★スタート | (1393,439) | btn_start(317×76) | BTN.START,参数 1 |
+| ★ロード | (1393,533) | btn_load | BTN.LOAD |
+| ★前回からの続き | (1393,627) | btn_lastload_{off,over,on,na} 显式五参 | BTN.LLOAD |
+| (无存档分支) | (1393,627) | btn_lastload_na | **BTN.LLOAD.NA** |
+| ★おまけ | (1314,745) | btn_extra | BTN.CGMODE(+VOMODE 同位) |
+| ★コンフィグ | (1477,745) | btn_config | BTN.CONFIG |
+| ★終了 | (1640,745) | btn_end(146×47) | BTN.END |
+
+- **BTN.START 参数 = G1 写入值**(arasuji=2/start=1),与 2.1 剧本侧
+  `\GO.G.IF` 闭环;
+- CONTINUE 由 ct=44 条件组按存档存在性二选一注册(双按钮同位);
+- 素材勘误:`btn_load` **无** `_na`(LOAD 恒可用);`btn_extra_na` 存在但
+  SCENE1 未绑定;manual/web 仅 off/over;
+- 坐标系:LOGICAL 1920×1080 一比一,PNG 可见 bbox 无透明边距,
+  XY = 图层左上角(旧目测布局 5~38px 非常数偏差已全列改正);
+- BTDEF.SCENE1/2/3:SCENE2/3(通关后)无 start/arasuji,换
+  btn_true/btn_scenejump(+na)(记录不实装)。
+
 ### 2.4 旧实现根因链(Confirmed,已修复)
 
 1. `\TITLE` 命令旧实现用 `Wait::Line`:任意点击即推进,按钮只是装饰精灵,无命中检测;
@@ -68,10 +98,10 @@
 
 | # | 差距 | 证据等级 |
 |---|---|---|
-| G1 | 当前 Start 直接 `wait=None`,依赖兜底 `\GO(SCENARIO_MAIN)` 进开场;未写 G1=1(非原生路径;且 OUTLINE 无法落地) | Confirmed(代码) |
-| G2 | 按钮默认绘制 `_on` 高亮态(start/load/lastload/extra)+ END 用 `_off`,原生默认应全 `_off` | Confirmed(图像对比) |
-| G3 | 无悬停 `_on` / 按下 `_over` 切换,无 `_na` 灰化 | Confirmed |
-| G4 | 按钮集仅 5 个,缺 `arasuji`(剧本已支持 G1==2)/`config`/`manual`/`web` | Confirmed |
+| G1 | ~~Start 直接 `wait=None` 依赖兜底~~ 已修(成果 78:Start/Outline 写 G1 走 `\GO.G.IF`) | 已关闭 |
+| G2 | ~~按钮默认绘 `_on` 高亮~~ 已修(成果 78:默认 `_off`) | 已关闭 |
+| G3 | ~~无悬停/按下/`_na` 切换~~ 已修(成果 78 三态 + 成果 79 `_na`:仅 lastload,`btn_load` 无 `_na` 变体——**原"LOAD/CONTINUE 用 `btn_*_na`"表述证伪**) | Confirmed |
+| G4 | 按钮集 6 个(arasuji 已补,成果 79),缺 `config`(1477,745)/`manual`/`web`(后两者仅 off/over 双态;SCENE2/3 的 true/scenejump 不实装) | Confirmed |
 | G5 | 悬停/点击无 SE;sse01~06 语义映射未验证 | Confirmed + Unknown |
 | G6 | `title_load()`/`title_extra()` 为桩:LOAD/EXTRA 画面未实装 | Confirmed |
 | G7 | END 疑似有确认对话框(`btn_confirm_title_bt4`)未实现 | Hypothesis |
@@ -83,13 +113,28 @@
 - [x] **P1-1 按钮三态绘制**:默认 `_off`;`cursor_logical` 命中时切 `_on`;按下帧切 `_over`。
       实现(成果 78):`TitleButton{rect,id,rids[3],shown}`;`title_screen()` 预载
       15 张三态素材,默认绘 `_off`;`update_title_buttons()` 每帧按命中态换层资源
-      (Player::tick 在 scenario.tick 后调用)。验证:单测通过;**实机目测待用户点击确认**。
+      (Player::tick 在 scenario.tick 后调用)。验证:单测通过;**实机已确认
+      (用户反馈按钮特效变化,成果 79 先导确认)**。
 - [x] **P1-2 写 G1 走原生分支**:Start→`host.set_global(1,1)` 后 `wait=None`(经
-      `\GO.G.IF` 落 SCENARIO_MAIN)。`ScenarioHost` 新增 `set_global` 默认方法,
-      PlayerCore 写 `@50[slot]`(与 `global()` 同槽)。验证:回归单测
-      `title_start_writes_g1_and_branches` 通过;**实机日志待确认 GO.G.IF 命中**。
-- [ ] **P1-3 补 OUTLINE 按钮**(`btn_arasuji_*`,G1=2 → `\GO.G.IF` 落 ARA,前情回顾直接可播)。
-- [ ] **P1-4 `_na` 态**:无存档时 LOAD/CONTINUE 用 `btn_*_na` 且点击无效(依赖存档系统状态,可先用"存档为空"近似)。
+      `\GO.G.IF` 落 SCENARIO_MAIN)。`ScenarioHost` 新增 `set_global` 默认方法。
+      **勘误(成果 78)**:原 `@50[n]` 映射被运行时证伪(@50 dims=[1],idx=1 越界,
+      "写 G1=1 失败…bound=1"),改为 PlayerCore 内部 `globals` 表(写入/读取
+      自洽;qsave/quick_load 同步改挂,JSON 形状不变)。引擎真值存储 Unknown:
+      全语料仅 scenario_start.txt 两处 `\GO.G.IF` 且均槽 1;引擎反编译无明文
+      命令串,G 实体待 es.BT.* 宏链逆向(B5)。
+      验证:回归单测 `title_start_writes_g1_and_branches` 通过 + 实机日志
+      `写 G1=1` / `GO.G.IF G[1]=1 == 1 → SCENARIO_MAIN`。
+- [x] **P1-3 补 OUTLINE 按钮**(成果 79):`btn_arasuji`(312×29)入列,层 id
+      `0x5C_7000_000A`,原生位 (1393,384)(START 上方);`TitleMenuAction::Outline`
+      → `set_global(1,2)` → `\GO.G.IF(1,"==",2,ARA)` 落前情回顾。
+      **取证升级**:`es.BT.SET("BTN.START",2)` 绑定实锤(BTN.START 参数 = G1
+      写入值);全列按钮坐标改正为 es.BT.XY.SET 原生值(旧目测 5~38px 偏差)。
+      验证:单测 `title_outline_writes_g2_and_branches` 通过;实机待确认。
+- [x] **P1-4 `_na` 态**(成果 79,**表述修订**:仅 CONTINUE 有 `_na`,
+      `btn_load` 无 `_na` 变体,LOAD 恒可用 —— 原计划"LOAD/CONTINUE 用
+      `btn_*_na`"证伪):无快存文件时 lastload 载 `btn_lastload_na` 单素材,
+      `TitleButton.active=false`(不切三态、点击无效;原生 BTN.LLOAD.NA
+      同位条件注册复现)。引擎原判据 save/*.sd,本实现以快存文件为判据。
 
 ### P2 反馈层
 

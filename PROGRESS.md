@@ -3320,6 +3320,89 @@ P1 保真度核心/P2 反馈层/P3 功能补全)。
   VARACT 0 条;**实机目测悬停高亮/按下闪烁、START 日志
   `GO.G.IF @[slot 1]=1 == 1 → SCENARIO_MAIN` 待用户点击确认**。
 
+**实机验证 + 勘误(同日)**:
+- 实机:三态绘制生效(用户确认按钮特效变化);START 点击暴露
+  **`写 G1=1 失败:idx[0]=1, bound=1 (array 6450=@50)`** ——
+  **B5 的 `G=n → @50[n]` 映射被运行时证伪**(@50 声明 dims=[1],
+  idx≥1 越界;旧 global() 静默吞错恒读 0,故此前未暴露)。
+  流程仍正确落开场 = 兜底 `\GO(SCENARIO_MAIN)`(Q:测试通过仅指
+  单测自洽;引擎真值存疑)。
+- **勘误修复**:G 槽改 PlayerCore 内部 `globals: HashMap<usize,i64>`
+  (global/set_global 同源自洽;quick_save/quick_load 同步改挂,
+  JSON `globals[0..64]` 形状不变 —— 原"@50 全局槽×64"实为死数据,
+  仅 idx0 有效)。GO.G.IF 日志改 `G[slot]` 措辞,注释同步勘误。
+- **附带取证**(es 系统宏库,YSTB 字符串 XOR 循环密钥解码):
+  1. 全语料 `\GO.G.IF` 仅 scenario_start.txt 两处,均槽 1;
+  2. **标题菜单为 YSTB 脚本驱动**:`yst00259.ybn` 以 es.BT.* 宏族
+     (CG/XY/Z/SE/SET/NAME/GROUP.SET)构建按钮,引用
+     `title/btn_start` + `BTN.START`;
+  3. **`es.BT.SE.SET` 绑定 `sysse/sse02`+`sysse/sse03`**(按钮悬停/
+     决定音候选,P2-1 映射取证直接命中);
+  4. 引擎反编译(~/ghidra_all/kemonomichi2.exe)无明文命令串
+     (哈希/分词匹配),G 真值实体仍 Unknown(B5 保持,待 es.BT
+     宏链或解释器定向逆向)。
+- 勘误后测试 4 通过;G1 落地路径:`写 G1=1` →
+  `GO.G.IF G[1]=1 == 1 → SCENARIO_MAIN`(日志措辞已更新)。
+
+***
+
+## 2026-09-08 OUTLINE 按钮 + CONTINUE 无存档灰化(P1 收尾,成果 79)
+
+### 成果 79:标题按钮原生坐标/绑定全解码(yst00259 静态解码)+ OUTLINE 落 ARA + `_na` 态 —— **Confirmed(脚本静态解码+素材)/Likely(实机目测待确认)**
+
+**先导确认**:成果 78 实机验证通过(用户确认三态特效变化),其
+Likely(实机目测)升 Confirmed。
+
+**新取证**(`yst00259.ybn` 全量静态解码,临时工具 `/tmp/dump_ystb_groups.py`:
+YSTB header→part1 命令组→槽位表→content 窗口 `[op:u8][len:u16][operand]`
+逐窗解码;修正点名:bn.ypf 条目名带 `$ysbin\` 前缀,须后缀匹配):
+1. **SCENE1 原生布局/绑定真值**(es.BT.XY.SET 坐标 + es.BT.SET 绑定,
+   LOGICAL 1920×1080 一比一;按钮 PNG 可见 bbox 无透明边距,
+   坐标 = 图层左上角):
+
+   | 按钮(NAME.SET Shift-JIS) | XY | CG | 绑定 |
+   |---|---|---|---|
+   | ★あらすじ | (1393,384) | btn_arasuji(312×29) | **BTN.START,参数 2** |
+   | ★スタート | (1393,439) | btn_start(317×76) | BTN.START,参数 1 |
+   | ★ロード | (1393,533) | btn_load | BTN.LOAD |
+   | ★前回からの続き | (1393,627) | btn_lastload_{off,over,on,na} 显式五参 | BTN.LLOAD |
+   | (同名,无存档) | (1393,627) | btn_lastload_na | **BTN.LLOAD.NA** |
+   | ★おまけ | (1314,745) | btn_extra | BTN.CGMODE(另注册 VOMODE 同位) |
+   | ★コンフィグ | (1477,745) | btn_config | BTN.CONFIG |
+   | ★終了 | (1640,745) | btn_end(146×47) | BTN.END |
+
+2. **BTN.START 参数即 G1 写入值**(arasuji=2/start=1)——\TITLE 按钮选择
+   写 G1 的引擎侧机制闭环:arasuji(前情回顾)点击 → G1=2 →
+   `\GO.G.IF(1,"==",2,ARA)` 落前情回顾(成果 77 剧本侧证据对上)。
+3. **CONTINUE 双按钮条件注册**:ct=44 条件组按存档存在性在
+   BTN.LLOAD(btn_lastload 三态)与 BTN.LLOAD.NA(btn_lastload_na 单张)
+   间二选一,同位 (1393,627)。
+4. **素材面勘误(计划 G3/P1-4 修订)**:`btn_load` **无** `_na` 变体
+   (cgsys_ec.ypf 全扫),LOAD 恒可用;`_na` 仅 lastload(+extra 有
+   `btn_extra_na` 但 SCENE1 未绑定)。manual/web 仅 off/over 双态。
+5. 旧布局(成果 78 截图目测 1355,479 等)与原生坐标有 **5~38px 非常数
+   偏差** → 全列改原生坐标。
+6. BTDEF.SCENE1/2/3 三套定义:SCENE2/3(通关后)无 start/arasuji,
+   换 btn_true/btn_scenejump(+na)(记录不实装)。
+
+**实现**(计划 P1-3/P1-4):
+- `title_screen()` 按钮表改 6 钮原生坐标(+arasuji,层 id
+  `0x5C_7000_000A`);无快存文件(`save/yskernel_qsave.json`,以本实现
+  快存为判据;引擎原判据 save/*.sd 未知悉)时 lastload 改载
+  `_na` 单素材。
+- `TitleButton` 增 `active: bool`:`_na` 态 = 单素材、`update_title_buttons`
+  跳过三态切换、`poll_title_menu` 跳过命中(点击无效)。
+- `TitleMenuAction::Outline`:与 Start 同路由,写 `set_global(1,2)` →
+  剧本流 `\GO.G.IF` 命中 ARA(前情回顾 ara.txt 18061 B,直接可播)。
+
+**验证**:
+- `cargo test -p yuris-player-core` 5 通过,含新增回归
+  `title_outline_writes_g2_and_branches`(OUTLINE → G1=2 → GO.G.IF 命中
+  ARA,兜底未走;原 START 回归参数化共存);
+- `cargo check --workspace` / `cargo test --workspace` 全绿;
+- 实机(待用户):arasuji 显示于 START 上方细条(312×29)、点击落
+  前情回顾;无存档启动 CONTINUE 灰化且点击无效。
+
 ***
 
 ## 更新约定

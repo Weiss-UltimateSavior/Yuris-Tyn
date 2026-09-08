@@ -73,6 +73,9 @@ pub trait ScenarioHost {
 /// 标题菜单按钮动作(引擎原生菜单的内置等价路由;成果 76)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TitleMenuAction {
+    /// OUTLINE(あらすじ):前情回顾 —— 原生绑定 `es.BT.SET("BTN.START",2)`
+    /// 写 G1=2,经 `\GO.G.IF(1,"==",2,ARA)` 落前情回顾(成果 79)。
+    Outline,
     /// START:开始新游戏(推进 scenario)。
     Start,
     /// LOAD:读档界面(内置暂走快读)。
@@ -238,11 +241,13 @@ impl ScenarioPlayer {
         if matches!(&self.wait, Some(Wait::TitleMenu)) {
             match host.poll_title_menu() {
                 None => return,
-                Some(TitleMenuAction::Start) => {
-                    // 引擎原生:\TITLE 把按钮选择写入 G1(START=1)后返回剧本,
-                    // 经 \GO.G.IF(1,"==",1,SCENARIO_MAIN) 落开场(成果 77 剧本
-                    // 实证);不再依赖末尾 \GO(SCENARIO_MAIN) 兜底。
-                    host.set_global(1, 1);
+                Some(act @ (TitleMenuAction::Start | TitleMenuAction::Outline)) => {
+                    // 引擎原生:\TITLE 把按钮选择写入 G1(START=1 / OUTLINE=2,
+                    // yst00259 `es.BT.SET("BTN.START",1|2)` 实证,成果 79)后
+                    // 返回剧本,经 \GO.G.IF 落 SCENARIO_MAIN / ARA;不再依赖
+                    // 末尾 \GO(SCENARIO_MAIN) 兜底。
+                    let g = if matches!(act, TitleMenuAction::Outline) { 2 } else { 1 };
+                    host.set_global(1, g);
                     self.wait = None;
                 }
                 Some(TitleMenuAction::Load | TitleMenuAction::LastLoad) => {
@@ -513,9 +518,9 @@ impl ScenarioPlayer {
             }
             "GO" if modifiers.iter().any(|m| m == "IF") => {
                 // \GO.G.IF(槽, op, 值, 目标):全局槽比较跳转。
-                // 槽 n ≈ @50[n](Likely;\GO.G.IF 全局槽语义见 PROGRESS B5,
-                // UNVERIFIED:映射未真机对照,新游戏走末尾 \GO 兜底,
-                // 新游戏走末尾 \GO(SCENARIO_MAIN) 兜底,不影响首通)。
+                // 槽 n = host 仿真内部全局槽(成果 78 勘误:原 @50[n] 映射被
+                // 运行时证伪,@50 dims=[1];引擎真值存储 Unknown,B5 待
+                // es.BT.* 宏链逆向)。全语料仅 scenario_start.txt 两处,均槽 1。
                 let slot = n(0).max(0) as usize;
                 let op = s(1);
                 let rhs = n(2);
@@ -530,7 +535,7 @@ impl ScenarioPlayer {
                     "<" => cur < rhs,
                     _ => false,
                 };
-                host.log(&format!("GO.G.IF @[slot {slot}]={cur} {op} {rhs} → {} ", if hit { &target } else { "(不跳)" }));
+                host.log(&format!("GO.G.IF G[{slot}]={cur} {op} {rhs} → {} ", if hit { &target } else { "(不跳)" }));
                 if hit {
                     match self.goto(&target) {
                         Ok(()) => host.reset_scene(),
@@ -662,6 +667,8 @@ mod title_menu_tests {
     struct TitleHost {
         globals: std::cell::RefCell<std::collections::HashMap<usize, i64>>,
         resets: std::cell::Cell<usize>,
+        /// poll_title_menu 返回的动作(模拟点击的按钮)。
+        action: TitleMenuAction,
     }
     impl ScenarioHost for TitleHost {
         fn show_bg(&mut self, _: &str, _: u64, _: [u8; 3]) {}
@@ -676,7 +683,7 @@ mod title_menu_tests {
         fn play_se(&mut self, _: &str) {}
         fn title_screen(&mut self) {}
         fn poll_title_menu(&mut self) -> Option<TitleMenuAction> {
-            Some(TitleMenuAction::Start) // 模拟点击 START
+            Some(self.action) // 模拟点击指定按钮
         }
         fn poll_choice(&mut self, _: usize) -> Option<usize> {
             None
@@ -695,18 +702,36 @@ mod title_menu_tests {
         fn log(&mut self, _: &str) {}
     }
 
-    #[test]
-    fn title_start_writes_g1_and_branches() {
-        let sc = "#TITLE\n\\TITLE\n\\GO.G.IF(1, \"==\", 1, MAIN)\n\\GO(FALLBACK)\n#MAIN\n\\END\n#FALLBACK\n\\END\n";
+    /// scenario:`#TITLE` 段 = \TITLE + 双 \GO.G.IF + 兜底;点击 `action`
+    /// 按钮后断言 G1 写入值与跳转落点(reset_scene 次数)。
+    fn run_title_click(action: TitleMenuAction) -> (Option<i64>, usize) {
+        let sc = "#TITLE\n\\TITLE\n\\GO.G.IF(1, \"==\", 1, MAIN)\n\\GO.G.IF(1, \"==\", 2, ARA)\n\\GO(FALLBACK)\n#MAIN\n\\END\n#ARA\n\\END\n#FALLBACK\n\\END\n";
         let mut p = ScenarioPlayer::new(vec![("t.txt".into(), sc.as_bytes().to_vec())]);
         let _ = p.goto("TITLE");
         let mut h = TitleHost {
             globals: Default::default(),
             resets: std::cell::Cell::new(0),
+            action,
         };
         p.tick(&mut h, false); // \TITLE → Wait::TitleMenu
-        p.tick(&mut h, false); // poll → Start → 写 G1 → 继续执行循环
-        assert_eq!(h.globals.borrow().get(&1).copied(), Some(1), "START 应写 G1=1");
-        assert_eq!(h.resets.get(), 1, "应命中 \\GO.G.IF 跳 MAIN(1 次 reset_scene),而非兜底");
+        p.tick(&mut h, false); // poll → action → 写 G1 → 继续执行循环
+        let g1 = h.globals.borrow().get(&1).copied();
+        (g1, h.resets.get())
+    }
+
+    #[test]
+    fn title_start_writes_g1_and_branches() {
+        // START → G1=1 → \GO.G.IF(1,"==",1,MAIN) 命中(1 次 reset_scene,非兜底)
+        let (g1, resets) = run_title_click(TitleMenuAction::Start);
+        assert_eq!(g1, Some(1), "START 应写 G1=1");
+        assert_eq!(resets, 1, "应命中 \\GO.G.IF 跳 MAIN(1 次 reset_scene),而非兜底");
+    }
+
+    #[test]
+    fn title_outline_writes_g2_and_branches() {
+        // OUTLINE(あらすじ)→ G1=2 → \GO.G.IF(1,"==",2,ARA) 命中(成果 79)
+        let (g1, resets) = run_title_click(TitleMenuAction::Outline);
+        assert_eq!(g1, Some(2), "OUTLINE 应写 G1=2");
+        assert_eq!(resets, 1, "应命中 \\GO.G.IF 跳 ARA(1 次 reset_scene),而非兜底");
     }
 }
