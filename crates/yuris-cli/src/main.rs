@@ -149,6 +149,7 @@ fn main() {
         cg_page: 0,
         cg_view: None,
         bgm_tracks: Vec::new(),
+        bgm_page: 0,
         game_dir: game_dir.clone(),
     };
     let mut player = Player {

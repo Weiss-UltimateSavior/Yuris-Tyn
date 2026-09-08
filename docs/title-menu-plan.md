@@ -179,13 +179,16 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
       (quick_load 泛化共用;读档完成 `start()` 重置)。空列表 =
       「セーブデータがありません」。**取舍**:原生 save/*.sd(YSVM 任务态)
       装载链未实现,列表为本实现 JSON 快存(与 F5/F9 同源)。
-- [x] **P3-2 EXTRA 画面实装**(成果 81):`open_extra_menu()` 落地菜单
-      (`btn_tab_{cg,bgmmode}` 标签钮 + 戻る)→ **CG 鉴赏** `open_extra_cg()`:
-      `cg\ev\*.png`(94 张)分页 4×3,缩略图解码 + cover 降采样直传
-      (`load_thumb`),点击全图查看、再点返回、前/後页;**BGM 鉴赏**
-      `open_extra_bgm()`:曲目两列 32 席点播(bgm 包枚举,`play_bgm`
-      通道复用),戻る停止播放。**取舍**:原生 CG 开启标记(.sd flags)
-      未逆向 → 不设锁全量展示;布局锚点为布置选择(Likely)。
+- [x] **P3-2 EXTRA 画面实装**(成果 81,勘误 2 重做):**EXTRA 直达 CG 鉴赏**
+      (yst00257 原生流程,无落地菜单;初版自造落地菜单被证伪 —— 标题层透出
+      致「UI 重复错位/透明黑」)。`cgmode/back`(3×3 白格画格底)+ ev 缩略图
+      9 格/页(`load_thumb` 解码降采样直传)+ 全图查看 + 前·後页;
+      **BGM 鉴赏**(顶部标签切换)= `extra/back`(EXTRAS 双列列表底)
+      22 曲/页点播,戻る停止。标签行:原生 y=10 起,活动 `_on` 单图 /
+      非活动 bt3n 图集 0 段裁剪(`load_atlas_segment`);返回钮 =
+      `btn_back_bt3` 三态图集裁剪(蓝/淡/橙)。标签行 4 钮:CG/BGM 可切,
+      RP(SCENE)/MV 以 `_na` 暗段禁用展示(st/wp/sv 素材缺失不布)。
+      **取舍**:CG 无锁全量展示;画格锚点按白格实测非引擎真值(Likely)。
 - [x] **P3-3 END 确认对话框**(成果 81):`request_quit()` → `open_confirm_end()`:
       压暗 + `confirm/dialog_end.png`(531×168)+ 通用 `confirm/btn_yes/btn_no`
       三态钮(146×45)。はい → `request_quit` 真退出;いいえ → 返回标题。
@@ -202,6 +205,8 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
   `crates/yuris-resource/examples/tmp_se_duration.rs`(symphonia 时长);
 - P3 素材取证(成果 81):`crates/yuris-vm/examples/tmp_p3_probe.rs`
   (YpfReader 鲁棒解析:saveload/confirm/extra 计数 + PNG 尺寸 +
-  thumb_cg↔ev 直映验证);
+  thumb_cg↔ev 直映验证)、`tmp_yst_dump.rs`(yst 组转储)、
+  `tmp_p3_probe2.rs`(extra 根素材/tab 变体)、`tmp_extract2.rs`
+  (素材提取目验:cgmode/back 3×3 画格、bt3 三态图集、tab 4 态图集);
 - 三态样张:`/tmp/title_btn/cgsys_title_btn_start_{off,on,over}.png`、`btn_lastload_na.png`、`btn_arasuji_off.png`;
 - 剧本转储:`scenario_start.txt`(889 B)/ `start.txt`(54 B)/ `ara.txt`(18061 B),工具 `/tmp/dump_sc.py`。

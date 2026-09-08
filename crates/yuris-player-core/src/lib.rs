@@ -163,13 +163,14 @@ pub const UI_CONFIRM_BASE: u64 = 0x5C_E000_0000;
 
 /// 子画面路由钮 id(常量而非算术 —— match 模式需要)。
 pub const UI_LOAD_BACK: u64 = UI_LOAD_BASE + 1;
-pub const UI_EXTRA_CG_TAB: u64 = UI_EXTRA_BASE + 1;
-pub const UI_EXTRA_BGM_TAB: u64 = UI_EXTRA_BASE + 2;
-pub const UI_EXTRA_BACK: u64 = UI_EXTRA_BASE + 3;
 pub const UI_CG_BACK: u64 = UI_CG_BASE + 1;
 pub const UI_CG_PREV: u64 = UI_CG_BASE + 0x90;
 pub const UI_CG_NEXT: u64 = UI_CG_BASE + 0x91;
+pub const UI_CG_TAB_BGM: u64 = UI_CG_BASE + 0xA1;
 pub const UI_BGM_BACK: u64 = UI_BGM_BASE + 1;
+pub const UI_BGM_PREV: u64 = UI_BGM_BASE + 0x90;
+pub const UI_BGM_NEXT: u64 = UI_BGM_BASE + 0x91;
+pub const UI_BGM_TAB_CG: u64 = UI_BGM_BASE + 0xA0;
 pub const UI_CONFIRM_YES: u64 = UI_CONFIRM_BASE + 2;
 pub const UI_CONFIRM_NO: u64 = UI_CONFIRM_BASE + 3;
 
@@ -179,15 +180,13 @@ pub const UI_CONFIRM_NO: u64 = UI_CONFIRM_BASE + 3;
 pub enum SubUi {
     /// 无子画面(标题菜单本体)。
     None,
-    /// LOAD 存档列表(back_load 整屏;成果 81)。
+    /// LOAD 存档列表(back_load 整屏)。
     Load,
-    /// EXTRA 落地菜单(CG/BGM 鉴赏入口;成果 81)。
-    ExtraMenu,
-    /// EXTRA CG 鉴赏(cg\ev 分页缩略图 + 全图查看;成果 81)。
+    /// EXTRA CG 鉴赏(EXTRA 直达,原生无落地菜单;cgmode/back 3×3 画格)。
     ExtraCg,
-    /// EXTRA BGM 鉴赏(曲目列表点播;成果 81)。
+    /// EXTRA BGM 鉴赏(extra/back 双列列表 + 曲目点播)。
     ExtraBgm,
-    /// END 确认对话框(dialog_end + yes/no;成果 81)。
+    /// END 确认对话框(dialog_end + yes/no)。
     ConfirmEnd,
 }
 
@@ -261,8 +260,9 @@ pub struct PlayerCore {
     pub ev_list: Vec<String>,
     pub cg_page: usize,
     pub cg_view: Option<ResourceId>,
-    /// EXTRA BGM:曲目名(去目录/扩展名)。
+    /// EXTRA BGM:曲目名(去目录/扩展名)与列表页码。
     pub bgm_tracks: Vec<String>,
+    pub bgm_page: usize,
     #[allow(dead_code)]
     pub game_dir: std::path::PathBuf,
 }
@@ -606,19 +606,27 @@ impl PlayerCore {
         for (i, sfx) in states.iter().enumerate() {
             rids[i] = self.load_scenario_image(&format!("{base_path}{sfx}"));
         }
+        self.ui_button_rids(id, rect, rids, z, true);
+    }
+
+    /// 子画面按钮(已备三态 rids;命中区 rect 用素材实际尺寸)。
+    fn ui_button_rids(
+        &mut self,
+        id: u64,
+        rect: [f32; 4],
+        rids: [Option<ResourceId>; 3],
+        z: i32,
+        active: bool,
+    ) {
         let (iw, ih) = rids
             .iter()
             .flatten()
             .next()
             .copied()
-            .and_then(|rid0| {
-                self.backend
-                    .as_ref()
-                    .and_then(|b| b.image_size(rid0.0))
-            })
+            .and_then(|rid0| self.backend.as_ref().and_then(|b| b.image_size(rid0.0)))
             .unwrap_or((rect[2] as u32, rect[3] as u32));
         if rids[TITLE_BTN_OFF].is_none() {
-            eprintln!("[scenario] 子画面按钮素材未命中: {base_path}(命中区保留)");
+            eprintln!("[scenario] 子画面按钮素材未命中: id={id:#x}(命中区保留)");
         }
         self.ui_buttons.push(TitleButton {
             rect: [rect[0], rect[1], iw as f32, ih as f32],
@@ -626,7 +634,7 @@ impl PlayerCore {
             rids,
             shown: TITLE_BTN_OFF,
             hovered: false,
-            active: true,
+            active,
         });
         let Some(rid0) = rids[TITLE_BTN_OFF] else {
             return;
@@ -644,6 +652,68 @@ impl PlayerCore {
             resource: Some(rid0),
         };
         self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// bt3 系图集条裁剪(横排 N 段;btn_back_bt3 = 蓝/淡/橙 3 态,
+    /// tab bt3n = 4 态;段宽 = 图宽/段数,rid = fnv(路径) 与段号混合)。
+    fn load_atlas_segment(&mut self, path: &str, seg: usize, segs: usize) -> Option<ResourceId> {
+        let data = self.index.read_cg_bytes(path)?;
+        let img = image::load_from_memory(&data).ok()?;
+        let seg_w = img.width() / segs as u32;
+        let x0 = (seg as u32 * seg_w).min(img.width());
+        let crop = img.crop_imm(x0, 0, seg_w, img.height());
+        let rgba = crop.to_rgba8();
+        let rid = ResourceId(
+            0x5C_A000_0000 ^ (((fnv1a(path.as_bytes()) & 0xFFFF_FFFF) << 2) | seg as u64),
+        );
+        let b = self.backend.as_mut()?;
+        b.load_image_rgba(rid, rgba.as_raw(), rgba.width(), rgba.height()).ok()?;
+        self.loaded.insert(rid.0);
+        Some(rid)
+    }
+
+    /// EXTRA 标签行(原生 yst00257:7 tab @ y=10;本实现布 4 钮 ——
+    /// CG/BGM 可切,RP(SCENE)/MV 以 `_na` 暗段展示为禁用(功能未实装),
+    /// st/wp/sv 素材包内缺失不布)。等距 247px 防重叠(原生 95px 步距的
+    /// 图集裁剪方式未取证,布点为 Likely)。活动标签 = `_on` 单图,
+    /// 非活动 = bt3n 图集第 0 段,悬停切 `_on`。
+    fn open_tab_bar(&mut self, base: u64, active_cg: bool) {
+        let (x0, y, tw, th, pitch) = (531.0, 10.0, 237.0, 53.0, 247.0);
+        // CG 标签
+        let cg_on = self.load_scenario_image("cgsys/extra/btn_tab_cgmode_on");
+        let cg_off = if active_cg {
+            cg_on
+        } else {
+            self.load_atlas_segment("cgsys/extra/btn_tab_cgmode_bt3n", 0, 4)
+                .or(cg_on)
+        };
+        self.ui_button_rids(base + 0xA0, [x0, y, tw, th], [cg_off, cg_on, None], 53, true);
+        // RP(SCENE)/MV:禁用展示(_na 暗段;不参与三态/点击)
+        let rp = self
+            .load_atlas_segment("cgsys/extra/btn_tab_rpmode_bt3n", 3, 4)
+            .or_else(|| self.load_atlas_segment("cgsys/extra/btn_tab_rpmode_bt3n", 0, 4));
+        self.ui_button_rids(base + 0xA2, [x0 + pitch, y, tw, th], [rp, rp, None], 53, false);
+        let mv = self
+            .load_atlas_segment("cgsys/extra/btn_tab_mvmode_bt3n", 3, 4)
+            .or_else(|| self.load_atlas_segment("cgsys/extra/btn_tab_mvmode_bt3n", 0, 4));
+        self.ui_button_rids(base + 0xA3, [x0 + 2.0 * pitch, y, tw, th], [mv, mv, None], 53, false);
+        // BGM 标签
+        let bgm_on = self.load_scenario_image("cgsys/extra/btn_tab_bgmmode_on");
+        let bgm_off = if active_cg {
+            self.load_atlas_segment("cgsys/extra/btn_tab_bgmmode_bt3n", 0, 4)
+                .or(bgm_on)
+        } else {
+            bgm_on
+        };
+        self.ui_button_rids(base + 0xA1, [x0 + 3.0 * pitch, y, tw, th], [bgm_off, bgm_on, None], 53, true);
+    }
+
+    /// bt3 三态返回钮(蓝=常态/淡=悬停/橙=按下;图集裁剪)。
+    fn open_back_button(&mut self, id: u64, rect: [f32; 4], z: i32) {
+        let s0 = self.load_atlas_segment("cgsys/extra/btn_back_bt3", 0, 3);
+        let s1 = self.load_atlas_segment("cgsys/extra/btn_back_bt3", 1, 3);
+        let s2 = self.load_atlas_segment("cgsys/extra/btn_back_bt3", 2, 3);
+        self.ui_button_rids(id, rect, [s0, s1, s2], z, true);
     }
 
     /// 子画面白字文本(无 backend = 无层,不 panic)。
@@ -822,7 +892,7 @@ impl PlayerCore {
     fn open_load(&mut self) {
         self.close_subui();
         self.subui = SubUi::Load;
-        if let Some(rid) = self.load_scenario_image(r"saveload/back_load") {
+        if let Some(rid) = self.load_scenario_image(r"cgsys/saveload/back_load") {
             let layer = Layer {
                 id: UI_LOAD_BASE,
                 z: 50,
@@ -887,54 +957,29 @@ impl PlayerCore {
         self.ui_button(
             UI_LOAD_BASE + 1,
             [1660.0, 940.0, 186.0, 87.0],
-            r"saveload/btn_back",
+            r"cgsys/saveload/btn_back",
             ["_off", "_on", "_over"],
             53,
         );
         eprintln!("[scenario] LOAD 画面(存档 {} 件)", self.save_entries.len());
     }
 
-    /// P3-2:EXTRA 落地菜单(CG/BGM 鉴赏入口 + 戻る)。
-    fn open_extra_menu(&mut self) {
-        self.close_subui();
-        self.subui = SubUi::ExtraMenu;
-        self.ui_fill(UI_EXTRA_BASE, [6, 5, 12, 220], 50);
-        self.ui_text(UI_EXTRA_BASE + 4, "EXTRA", 870.0, 160.0, 51);
-        self.ui_button(
-            UI_EXTRA_BASE + 1,
-            [760.0, 320.0, 400.0, 80.0],
-            r"extra/btn_tab_cgmode",
-            ["", "_on", ""],
-            51,
-        );
-        self.ui_button(
-            UI_EXTRA_BASE + 2,
-            [760.0, 460.0, 400.0, 80.0],
-            r"extra/btn_tab_bgmmode",
-            ["", "_on", ""],
-            51,
-        );
-        self.ui_button(
-            UI_EXTRA_BASE + 3,
-            [870.0, 880.0, 186.0, 87.0],
-            r"saveload/btn_back",
-            ["_off", "_on", "_over"],
-            51,
-        );
-        eprintln!("[scenario] EXTRA 菜单");
-    }
-
-    /// P3-2:CG 鉴赏分页(cg\ev 缩略图 4×3 + 全图查看 + 前/后页 + 戻る)。
+    /// P3-2:CG 鉴赏(原生 yst00257 = cgmode 屏,EXTRA 直达无落地菜单;
+    /// cgmode/back 3×3 画格 + 顶部标签行 + bt3 返回钮)。
     fn open_extra_cg(&mut self, page: usize) {
         self.close_subui();
         self.subui = SubUi::ExtraCg;
-        if self.load_scenario_image(r"extra/cgmode/back").is_none() {
-            self.ui_fill(UI_CG_BASE, [10, 8, 18, 255], 50);
+        if self
+            .load_scenario_image(r"cgsys/extra/cgmode/back")
+            .is_none()
+        {
+            self.ui_fill(UI_CG_BASE, [234, 244, 248, 255], 50);
         }
+        self.open_tab_bar(UI_CG_BASE, true);
         if self.ev_list.is_empty() {
             self.ev_list = self.list_ev_paths();
         }
-        const PER: usize = 12;
+        const PER: usize = 9; // 原生画格 3×3(cgmode/back 白格)
         let pages = self.ev_list.len().div_ceil(PER).max(1);
         let page = page.min(pages - 1);
         self.cg_page = page;
@@ -945,12 +990,14 @@ impl PlayerCore {
             .take(PER)
             .cloned()
             .collect();
+        // 画格锚点(cgmode/back 白格实测:列 277/736/1192 起、行 141/435/733 起,
+        // 格 ~458×294;缩略图内缩 ~7px)
         for (i, path) in page_items.iter().enumerate() {
-            let x = 96.0 + (i % 4) as f32 * 440.0;
-            let y = 150.0 + (i / 4) as f32 * 280.0;
-            self.load_thumb(UI_CG_BASE + 0x10 + i as u64, path, x, y, 420.0, 236.0);
+            let x = 284.0 + (i % 3) as f32 * 458.0;
+            let y = 148.0 + (i / 3) as f32 * 296.0;
+            self.load_thumb(UI_CG_BASE + 0x10 + i as u64, path, x, y, 445.0, 284.0);
             self.ui_buttons.push(TitleButton {
-                rect: [x, y, 420.0, 236.0],
+                rect: [x, y, 445.0, 284.0],
                 id: UI_CG_BASE + 0x80 + i as u64,
                 rids: [None, None, None],
                 shown: TITLE_BTN_OFF,
@@ -961,39 +1008,33 @@ impl PlayerCore {
         self.ui_text(
             UI_CG_BASE + 0x50,
             &format!("{} / {}  ({} CG)", page + 1, pages, self.ev_list.len()),
-            850.0,
-            1010.0,
+            640.0,
+            984.0,
             52,
         );
         if page > 0 {
             self.ui_buttons.push(TitleButton {
-                rect: [100.0, 960.0, 220.0, 90.0],
-                id: UI_CG_BASE + 0x90,
+                rect: [250.0, 950.0, 220.0, 100.0],
+                id: UI_CG_PREV,
                 rids: [None, None, None],
                 shown: TITLE_BTN_OFF,
                 hovered: false,
                 active: true,
             });
-            self.ui_text(UI_CG_BASE + 0x51, "前", 180.0, 985.0, 52);
+            self.ui_text(UI_CG_BASE + 0x51, "前", 330.0, 985.0, 52);
         }
         if page + 1 < pages {
             self.ui_buttons.push(TitleButton {
-                rect: [1600.0, 960.0, 220.0, 90.0],
-                id: UI_CG_BASE + 0x91,
+                rect: [1350.0, 950.0, 220.0, 100.0],
+                id: UI_CG_NEXT,
                 rids: [None, None, None],
                 shown: TITLE_BTN_OFF,
                 hovered: false,
                 active: true,
             });
-            self.ui_text(UI_CG_BASE + 0x52, "次", 1680.0, 985.0, 52);
+            self.ui_text(UI_CG_BASE + 0x52, "次", 1430.0, 985.0, 52);
         }
-        self.ui_button(
-            UI_CG_BASE + 1,
-            [1660.0, 30.0, 186.0, 87.0],
-            r"saveload/btn_back",
-            ["_off", "_on", "_over"],
-            53,
-        );
+        self.open_back_button(UI_CG_BACK, [1620.0, 930.0, 237.0, 80.0], 53);
         eprintln!(
             "[scenario] CG 鉴赏 {}/{}({} 件)",
             page + 1,
@@ -1002,26 +1043,42 @@ impl PlayerCore {
         );
     }
 
-    /// P3-2:BGM 鉴赏(两列曲目点播 + 戻る;戻る停止播放)。
+    /// P3-2:BGM 鉴赏入口(保持上次页码)。
     fn open_extra_bgm(&mut self) {
+        self.open_extra_bgm_page(self.bgm_page);
+    }
+
+    /// P3-2:BGM 鉴赏指定页(原生 extra/back = EXTRAS 双列列表底;曲目点播,
+    /// 戻る停止播放)。22 曲/页(2 列 × 11 行,对齐底图画线)。
+    fn open_extra_bgm_page(&mut self, page: usize) {
         self.close_subui();
         self.subui = SubUi::ExtraBgm;
-        if self.load_scenario_image(r"extra/bgmmode/back").is_none() {
-            self.ui_fill(UI_BGM_BASE, [10, 8, 18, 255], 50);
+        if self.load_scenario_image(r"cgsys/extra/back").is_none() {
+            self.ui_fill(UI_BGM_BASE, [234, 244, 248, 255], 50);
         }
+        self.open_tab_bar(UI_BGM_BASE, false);
         if self.bgm_tracks.is_empty() {
             self.bgm_tracks = self.list_bgm_tracks();
         }
-        let tracks: Vec<String> =
-            self.bgm_tracks.iter().take(32).cloned().collect();
+        const PER: usize = 22;
+        let pages = self.bgm_tracks.len().div_ceil(PER).max(1);
+        let page = page.min(pages - 1);
+        self.bgm_page = page;
+        let tracks: Vec<String> = self
+            .bgm_tracks
+            .iter()
+            .skip(page * PER)
+            .take(PER)
+            .cloned()
+            .collect();
         for (i, t) in tracks.iter().enumerate() {
-            let col = i / 16;
-            let row = i % 16;
-            let x = 220.0 + col as f32 * 800.0;
-            let y = 130.0 + row as f32 * 54.0;
+            let col = i / 11;
+            let row = i % 11;
+            let x = 368.0 + col as f32 * 600.0;
+            let y = 250.0 + row as f32 * 56.0;
             self.ui_text(UI_BGM_BASE + 0x10 + i as u64, t, x, y, 52);
             self.ui_buttons.push(TitleButton {
-                rect: [x - 16.0, y - 10.0, 760.0, 50.0],
+                rect: [x - 16.0, y - 8.0, 560.0, 50.0],
                 id: UI_BGM_BASE + 0x80 + i as u64,
                 rids: [None, None, None],
                 shown: TITLE_BTN_OFF,
@@ -1032,14 +1089,42 @@ impl PlayerCore {
         if self.bgm_tracks.is_empty() {
             self.ui_text(UI_BGM_BASE + 0x10, "BGM なし", 880.0, 480.0, 52);
         }
-        self.ui_button(
-            UI_BGM_BASE + 1,
-            [1660.0, 940.0, 186.0, 87.0],
-            r"saveload/btn_back",
-            ["_off", "_on", "_over"],
-            53,
+        self.ui_text(
+            UI_BGM_BASE + 0x50,
+            &format!("{} / {}", page + 1, pages),
+            900.0,
+            984.0,
+            52,
         );
-        eprintln!("[scenario] BGM 鉴赏({} 曲)", self.bgm_tracks.len());
+        if page > 0 {
+            self.ui_buttons.push(TitleButton {
+                rect: [250.0, 950.0, 220.0, 100.0],
+                id: UI_BGM_PREV,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+            self.ui_text(UI_BGM_BASE + 0x51, "前", 330.0, 985.0, 52);
+        }
+        if page + 1 < pages {
+            self.ui_buttons.push(TitleButton {
+                rect: [1350.0, 950.0, 220.0, 100.0],
+                id: UI_BGM_NEXT,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+            self.ui_text(UI_BGM_BASE + 0x52, "次", 1430.0, 985.0, 52);
+        }
+        self.open_back_button(UI_BGM_BACK, [1620.0, 930.0, 237.0, 80.0], 53);
+        eprintln!(
+            "[scenario] BGM 鉴赏 {}/{}({} 曲)",
+            page + 1,
+            pages,
+            self.bgm_tracks.len()
+        );
     }
 
     /// P3-3:END 确认对话框(dialog_end + yes/no 三态钮)。
@@ -1047,7 +1132,7 @@ impl PlayerCore {
         self.close_subui();
         self.subui = SubUi::ConfirmEnd;
         self.ui_fill(UI_CONFIRM_BASE, [0, 0, 0, 140], 50);
-        if let Some(rid) = self.load_scenario_image(r"confirm/dialog_end") {
+        if let Some(rid) = self.load_scenario_image(r"cgsys/confirm/dialog_end") {
             let layer = Layer {
                 id: UI_CONFIRM_BASE + 1,
                 z: 51,
@@ -1065,14 +1150,14 @@ impl PlayerCore {
         self.ui_button(
             UI_CONFIRM_BASE + 2,
             [740.0, 470.0, 146.0, 45.0],
-            r"confirm/btn_yes",
+            r"cgsys/confirm/btn_yes",
             ["_off", "_on", "_over"],
             52,
         );
         self.ui_button(
             UI_CONFIRM_BASE + 3,
             [1040.0, 470.0, 146.0, 45.0],
-            r"confirm/btn_no",
+            r"cgsys/confirm/btn_no",
             ["_off", "_on", "_over"],
             52,
         );
@@ -1110,21 +1195,6 @@ impl PlayerCore {
                     }
                 }
             }
-            SubUi::ExtraMenu => match id {
-                UI_EXTRA_CG_TAB => {
-                    self.play_sysse(TITLE_SE_DECIDE);
-                    self.open_extra_cg(0);
-                }
-                UI_EXTRA_BGM_TAB => {
-                    self.play_sysse(TITLE_SE_DECIDE);
-                    self.open_extra_bgm();
-                }
-                UI_EXTRA_BACK => {
-                    self.play_sysse(TITLE_SE_CANCEL);
-                    self.close_subui();
-                }
-                _ => {}
-            },
             SubUi::ExtraCg => {
                 // 全图查看:任意点击返回分页
                 if self.cg_view.take().is_some() {
@@ -1134,6 +1204,11 @@ impl PlayerCore {
                     return;
                 }
                 match id {
+                    UI_CG_TAB_BGM => {
+                        // 标签:BGM 鉴赏
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        self.open_extra_bgm();
+                    }
                     UI_CG_PREV => {
                         self.play_sysse(TITLE_SE_DECIDE);
                         self.open_extra_cg(self.cg_page.saturating_sub(1));
@@ -1144,11 +1219,11 @@ impl PlayerCore {
                     }
                     UI_CG_BACK => {
                         self.play_sysse(TITLE_SE_CANCEL);
-                        self.open_extra_menu();
+                        self.close_subui(); // 戻る → 标题(原生各屏独立返回)
                     }
                     id if (UI_CG_BASE + 0x80..UI_CG_BASE + 0x90).contains(&id) => {
                         let i = (id - UI_CG_BASE - 0x80) as usize;
-                        const PER: usize = 12;
+                        const PER: usize = 9; // 原生画格 3×3
                         if let Some(path) = self.ev_list.get(self.cg_page * PER + i) {
                             let path = path.clone();
                             self.play_sysse(TITLE_SE_DECIDE);
@@ -1159,20 +1234,38 @@ impl PlayerCore {
                 }
             }
             SubUi::ExtraBgm => {
-                if id == UI_BGM_BASE + 1 {
-                    self.audio.stop_bgm();
-                    self.play_sysse(TITLE_SE_CANCEL);
-                    self.open_extra_menu();
-                } else if id >= UI_BGM_BASE + 0x80 {
-                    let i = (id - UI_BGM_BASE - 0x80) as usize;
-                    if let Some(t) = self.bgm_tracks.get(i) {
-                        let t = t.clone();
+                match id {
+                    UI_BGM_TAB_CG => {
+                        // 标签:CG 鉴赏
                         self.play_sysse(TITLE_SE_DECIDE);
-                        match self.resolve_audio(&self.audio_packs, "", &t) {
-                            Some(data) => self.audio.play_bgm(&t, data, None),
-                            None => eprintln!("[audio] bgm 未命中: {t}"),
+                        self.open_extra_cg(self.cg_page);
+                    }
+                    UI_BGM_BACK => {
+                        self.audio.stop_bgm();
+                        self.play_sysse(TITLE_SE_CANCEL);
+                        self.close_subui(); // 戻る → 标题(停止 BGM)
+                    }
+                    UI_BGM_PREV => {
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        self.open_extra_bgm_page(self.bgm_page.saturating_sub(1));
+                    }
+                    UI_BGM_NEXT => {
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        self.open_extra_bgm_page(self.bgm_page + 1);
+                    }
+                    id if (UI_BGM_BASE + 0x80..UI_BGM_BASE + 0x90).contains(&id) => {
+                        let i = (id - UI_BGM_BASE - 0x80) as usize;
+                        const PER: usize = 22;
+                        if let Some(t) = self.bgm_tracks.get(self.bgm_page * PER + i) {
+                            let t = t.clone();
+                            self.play_sysse(TITLE_SE_DECIDE);
+                            match self.resolve_audio(&self.audio_packs, "", &t) {
+                                Some(data) => self.audio.play_bgm(&t, data, None),
+                                None => eprintln!("[audio] bgm 未命中: {t}"),
+                            }
                         }
                     }
+                    _ => {}
                 }
             }
             SubUi::ConfirmEnd => {
@@ -1736,8 +1829,9 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn title_extra(&mut self) {
-        // P3-2(成果 81):EXTRA 落地菜单(CG/BGM 鉴赏 + 戻る)。
-        self.open_extra_menu();
+        // P3-2(成果 81):EXTRA → CG 鉴赏屏(原生 yst00257 流程:无落地菜单,
+        // 顶部标签切 CG/BGM 模式)。
+        self.open_extra_cg(0);
     }
 
     fn request_quit(&mut self) {
@@ -1993,6 +2087,7 @@ mod title_se_tests {
             cg_page: 0,
             cg_view: None,
             bgm_tracks: Vec::new(),
+            bgm_page: 0,
             game_dir: std::path::PathBuf::new(),
         }
     }
@@ -2095,6 +2190,7 @@ mod subui_tests {
             cg_page: 0,
             cg_view: None,
             bgm_tracks: Vec::new(),
+            bgm_page: 0,
             game_dir: std::path::PathBuf::new(),
         }
     }
@@ -2194,30 +2290,23 @@ mod subui_tests {
     }
 
     #[test]
-    fn extra_menu_nav_and_back() {
+    fn extra_screens_nav_and_back() {
         let mut core = make_core();
-        core.open_extra_menu();
-        assert_eq!(core.subui, SubUi::ExtraMenu);
-        // CG 标签页
-        core.cursor_logical = (800, 360); // cg tab(760,320,400,80)
-        core.frame_clicked = true;
-        assert_eq!(core.poll_title_menu(), None);
+        // EXTRA → 直达 CG 鉴赏(原生 yst00257 流程,无落地菜单)
+        core.title_extra();
         assert_eq!(core.subui, SubUi::ExtraCg);
-        // CG 画面戻る → 落地菜单
-        core.cursor_logical = (1700, 60); // cg back(1660,30,186,87)
-        core.frame_clicked = true;
-        assert_eq!(core.poll_title_menu(), None);
-        assert_eq!(core.subui, SubUi::ExtraMenu);
-        // BGM 标签页 → 戻る → 落地菜单 → 戻る → 标题
-        core.cursor_logical = (800, 500); // bgm tab(760,460,400,80)
+        // BGM 标签(1272,10,237,53;4 钮标签行第 4 位)
+        core.cursor_logical = (1350, 30);
         core.frame_clicked = true;
         assert_eq!(core.poll_title_menu(), None);
         assert_eq!(core.subui, SubUi::ExtraBgm);
-        core.cursor_logical = (1700, 960); // bgm back(1660,940,186,87)
+        // CG 标签(531,10,237,53)
+        core.cursor_logical = (600, 30);
         core.frame_clicked = true;
         assert_eq!(core.poll_title_menu(), None);
-        assert_eq!(core.subui, SubUi::ExtraMenu);
-        core.cursor_logical = (900, 920); // landing back(870,880,186,87)
+        assert_eq!(core.subui, SubUi::ExtraCg);
+        // 戻る(1620,930,237,80)→ 标题
+        core.cursor_logical = (1700, 960);
         core.frame_clicked = true;
         assert_eq!(core.poll_title_menu(), None);
         assert_eq!(core.subui, SubUi::None);

@@ -3479,23 +3479,42 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
 **实现**(`yuris-player-core`;scenario 播放器零改动 —— 全部经既有
 `poll_title_menu` 路由,`Wait::TitleMenu` 下子画面消费点击):
 
-- **`SubUi` 状态机**(None/Load/ExtraMenu/ExtraCg/ExtraBgm/ConfirmEnd)+
-  UI_* 层 id 段(0x5C_8000/9000/B000/D000/E000_0000,z 50..61,与标题/
+- **`SubUi` 状态机**(None/Load/ExtraCg/ExtraBgm/ConfirmEnd)+
+  UI_* 层 id 段(0x5C_8000/B000/D000/E000_0000,z 50..61,与标题/
   台词窗/选择肢错开);
 - **LOAD**(title_load):back_load 整屏 + 存档行(扫描 `save/yskernel_*.json`,
   mtime 新在前,`fmt_unix_time` civil 算法显示时间,最多 8 行,空列表 =
   「セーブデータがありません」)+ 戻る;槽位点击 → `request_load_path` →
   `Player::tick` 走 **`restore_from(path)`**(quick_load 泛化共用);
-- **EXTRA**(title_extra):落地菜单(cgmode/bgmmode 标签 + 戻る)→
-  **CG 鉴赏**:ev 94 张分页 4×3,`load_thumb` 解码 + cover 降采样直传,
-  点击全图查看 / 再点返回 / 前·後页;**BGM 鉴赏**:曲目两列 32 席点播
-  (bgm 包枚举,play_bgm 通道复用;戻る停止);
+- **EXTRA**(title_extra):直达 **CG 鉴赏屏**(原生 yst00257 流程:无落地
+  菜单,顶部标签切模式)—— `cgmode/back`(3×3 白格画格)上摆 ev 缩略图
+  9 格/页,`load_thumb` 解码 + cover 降采样直传,点击全图查看 / 再点返回 /
+  前·後页;**BGM 鉴赏**(标签切换)= `extra/back`(EXTRAS 双列列表底)
+  22 曲/页点播(bgm 包枚举,play_bgm 通道复用;戻る停止);
+- **EXTRA 标签行**(yst00257 XY.SET 原生 y=10、x=531 起):活动标签 =
+  `_on` 单图,非活动 = bt3n 图集第 0 段(`load_atlas_segment` 裁剪)。
+  原生 7 tab:CG/BGM 可切;RP(SCENE)/MV 以 bt3n 第 4 段 `_na` 暗段
+  展示为禁用(功能未实装);stmode/wpmode/svmode 素材包内缺失不布。
+  布点等距 247px(原生 95px 步距的图集裁剪方式未取证,Likely);
+- **bt3 三态图集**:btn_back_bt3 = 蓝(常态)/淡(悬停)/橙(按下)横排
+  3 段(712/3),`open_back_button` 裁剪出三态(LOAD/CG/BGM 屏共用);
 - **END**(request_quit):压暗 + dialog_end + btn_yes/btn_no;
   **はい → request_quit 真退出;いいえ → 返回标题(sse06)**;
 - 音效:悬停 sse02 / 决定 sse03 / 戻る·いいえ **sse06**(成果 80 取消音
   映射首次落地);`tri_state_pass` 公共体(标题/子画面按钮共用);
 - 防御:素材未命中保留兜底命中区(不静默失效);reset_title_layers /
   close_subui / restore_from 三处统一清理子画面。
+- **勘误 1(实机首验后补)**:初版子画面素材路径漏 `cgsys/` 前缀
+  (resolve_entry 精确匹配带全路径,fuzzy 仅同目录 → 全 miss,表现为
+  「画面打开但无 UI」);EXTRA 标签钮常态后缀为 `_bt3n`(包内无裸名)。
+  均已修正。
+- **勘误 2(实机复验后重做)**:初版 EXTRA 为自造落地菜单(半透明压暗 +
+  两钮),标题层透出 → 「UI 重复错位、背景透明黑」。取证(yst00257 全组
+  转储 `tmp_yst_dump.rs` + 素材提取目验 `tmp_extract2.rs`)判定:原生
+  **无落地菜单**,EXTRA 直达 cgmode 屏,7 tab 顶部切模式;`cgmode/back`
+  = 3×3 画格底(每页 9 格非 12)、`extra/back` = EXTRAS 双列列表底
+  (= bgmmode/back 同图)、`btn_back_bt3` = 三态图集、
+  `btn_tab_*_bt3n` = 4 态图集(237/段)。EXTRA 流程按原生重做。
 
 **取舍(如实记录)**:原生 CG 开启标记(.sd flags)未逆向 → 鉴赏不设锁
 全量展示;子画面布局锚点为布置选择,原生坐标未逐像素对照(Likely);
