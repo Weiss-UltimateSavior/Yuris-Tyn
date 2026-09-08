@@ -1471,7 +1471,9 @@ impl ScenarioHost for PlayerCore {
     fn hide_sprite(&mut self, name: &str, fade_ms: u64) {
         let id = fnv1a(name.as_bytes());
         if fade_ms > 0 {
-            // 淡出:动画完成由 tick 收尾隐藏
+            // 淡出:动画完成由 tick 收尾隐藏。先撤销同 id 未完成的淡入条目
+            // (否则 in/out 双条目同帧互写 alpha,闪烁且终态不确定)。
+            self.sprite_fades.retain(|(fid, _, _, _)| fid != &id);
             self.sprite_fades.push((id, Instant::now(), fade_ms, true));
             return;
         }
@@ -1961,6 +1963,7 @@ impl Player {
         for id in self.core.sprites.drain(..) {
             scene.hide_layer(id);
         }
+        self.core.sprite_fades.clear(); // 挂起淡入会把已隐藏层重新点亮(残留修复)
         scene.hide_layer(SC_TEXT);
         scene.hide_layer(SC_WIN);
         self.core.clear_choices();
@@ -1980,7 +1983,12 @@ impl PlayerCore {
             scene.hide_layer(0x5C_7000_0000 + i);
         }
         self.title_buttons.clear(); // 命中区同步失效(成果 78)
-        self.sprites.clear();
+        // scenario 精灵层同步隐藏(残留修复,成果 81 勘误 3):快速点击压缩
+        // 时序时,\\S.D 的淡出动画可能未完成即遇 reset —— 只清 sprite_fades
+        // 不隐藏层,LOGO/注意事项等会以当时 alpha 永久残留(标题与正篇)。
+        for id in self.sprites.drain(..) {
+            scene.hide_layer(id);
+        }
         self.sprite_fades.clear();
         scene.hide_layer(SC_TEXT);
         scene.hide_layer(SC_WIN);
@@ -2287,6 +2295,39 @@ mod subui_tests {
         );
         assert_eq!(core.audio.se_log.last().map(String::as_str), Some("sse03"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reset_hides_pending_sprites() {
+        // 残留修复(成果 81 勘误 3):快速点击时序压缩 → reset 时淡出未完成
+        // → 精灵层必须同步隐藏(此前只清 sprite_fades,层以当时 alpha 残留)。
+        let mut core = make_core();
+        let id = 0x1234;
+        core.sprites.push(id);
+        core.sprite_fades.push((id, Instant::now(), 800, true));
+        core.bridge.scene_mut().upsert_layer(Layer {
+            id,
+            z: 10,
+            visible: true,
+            x: 0.0,
+            y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            alpha: 0.4,
+            rotation: 0.0,
+            resource: None,
+        });
+        core.reset_title_layers();
+        let l = core
+            .bridge
+            .scene()
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .expect("层应在场景中(隐藏态)");
+        assert!(!l.visible);
+        assert!(core.sprite_fades.is_empty());
+        assert!(core.sprites.is_empty());
     }
 
     #[test]

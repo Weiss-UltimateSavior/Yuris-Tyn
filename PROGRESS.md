@@ -3515,6 +3515,13 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
   = 3×3 画格底(每页 9 格非 12)、`extra/back` = EXTRAS 双列列表底
   (= bgmmode/back 同图)、`btn_back_bt3` = 三态图集、
   `btn_tab_*_bt3n` = 4 态图集(237/段)。EXTRA 流程按原生重做。
+- **勘误 3(实机:快速点击残留图像)**:快速点击跳过厂商 CG 时序压缩后,
+  `\S.D` 淡出动画未走完即遇 `\TITLE`/`\GO` reset —— `reset_title_layers`
+  只清 `sprite_fades` **不隐藏精灵层** → LOGO/注意事项以当时 alpha 永久
+  残留(标题与正篇)。修复:reset 逐 id 隐藏 `sprites`(drain);
+  连带修 `quick_load` 未清 `sprite_fades`(挂起淡入会把已隐藏层重新
+  点亮)与 `hide_sprite` 淡出前不移除同 id 淡入旧条目(in/out 双条目
+  同帧互写 alpha)。回归:`reset_hides_pending_sprites`。
 
 **取舍(如实记录)**:原生 CG 开启标记(.sd flags)未逆向 → 鉴赏不设锁
 全量展示;子画面布局锚点为布置选择,原生坐标未逐像素对照(Likely);
