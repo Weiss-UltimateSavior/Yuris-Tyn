@@ -80,17 +80,59 @@ fn fmt_unix_time(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}")
 }
 
-/// VM UI 层过滤(P8.2b 第 1 步):debug 覆盖层与非 main 通道不建层。
-/// 游戏内 UI 部件都在 `cgsys/main/`(消息窗部件/常驻按钮,成果 68 实证
-/// txspace 同族);title/config/extra 屏由内置子画面接管,避免双份 UI。
+/// VM UI 部件 z 分层带(P8.2b 第 3 步初值;实现选择,待引擎截图对拍):
+/// 按钮族(路径含 `btn_`)= 95(台词之上,可点击);底框/提示族 = 70
+/// (立绘之上、台词之下)。原生 Z 槽语义 Unknown,先按功能分带。
+fn vm_ui_z_for_path(path_lower: &str) -> i32 {
+    if path_lower.contains("btn_") {
+        95
+    } else {
+        70
+    }
+}
+
+/// VM UI 层过滤(P8.2b):允许全部 `cgsys\` 系统 UI 素材(游戏内按钮/消息
+/// 窗/存档钮等分属 main/saveload/config 等子目录 —— 成果 82 勘误 7:
+/// 仅限 main 会把 saveload 的 SAVE/LOAD/QS/QL 组过滤掉,参考图按钮组
+/// 不全),deny:debug 覆盖层(成果 69 B3)、title/extra(内置标题与子画面
+/// 接管,防双份)。标题等待期由 allow_vm_ui=false 整体关闭。
+/// VM FILE 参数用 `/`(成果 66),归一为 `\` 再判。
 fn vm_ui_layer_allowed(path_lower: &str, allow_vm_ui: bool) -> bool {
     if !allow_vm_ui {
         return false; // 标题菜单等待期:内置标题接管视觉
     }
-    if path_lower.contains("debug") {
-        return false; // 引擎 debug 覆盖层(成果 69 B3)
+    let norm = path_lower.replace('/', "\\");
+    if norm.contains(r"\debug\") {
+        return false; // 引擎 debug 覆盖层
     }
-    path_lower.contains(r"cgsys\main\") || path_lower.contains("cgsys/main/")
+    if norm.contains(r"cgsys\title\") || norm.contains(r"cgsys\extra\") {
+        return false; // 内置标题/EXTRA 子画面接管
+    }
+    norm.contains(r"cgsys\")
+}
+
+/// es.BT CG 名 → (基名, 态优先级)。名字形如
+/// `ES.GAMEMAIN.BTN.VOICEM."BT.OFF=0=1` —— 同一按钮各态(OFF/ON/OVER/
+/// ONOV/NA)注册为**独立 CG**,引擎按态切换可见性(成果 82 勘误 8)。
+/// 显示层必须按基名收敛为一层(低优先级优先;仅 NA 亦显示),否则
+/// 3~4 个态图叠同一坐标(叠层错乱根因);texticon/counticon 族各 index
+/// 也是同基名同态多份,一并坍缩。
+fn vm_ui_base_prio(name: &[u8]) -> (Vec<u8>, u8) {
+    let Some(pos) = name.windows(4).rposition(|w| w == b".BT.") else {
+        return (name.to_vec(), 0);
+    };
+    let base = name[..pos].to_vec();
+    let tok = &name[pos + 4..];
+    let state_end = tok.iter().position(|&b| b == b'=').unwrap_or(tok.len());
+    let prio = match &tok[..state_end] {
+        b"OFF" => 0u8,
+        b"ON" => 1,
+        b"OVER" => 2,
+        b"ONOV" => 3,
+        b"NA" => 4,
+        _ => 5,
+    };
+    (base, prio)
 }
 
 fn scene_mut_layer(scene: &mut yuris_scene::Scene, id: u64) -> Option<&mut Layer> {
@@ -277,7 +319,10 @@ pub struct PlayerCore {
     pub bgm_tracks: Vec<String>,
     pub bgm_page: usize,
     /// VM CG 通道建的场景层 id(P8.2b;标题进入时统一隐藏)。
+    /// 层 id = fnv(es.BT 基名)(勘误 8:同钮各态收敛一层)。
     pub vm_ui_layers: Vec<u64>,
+    /// es.BT 基名 → 当前显示态优先级(低值优先显示;OFF=0)。
+    pub vm_ui_prio: std::collections::HashMap<Vec<u8>, u8>,
     /// 已进入过标题画面(P8.2b 门控:厂商 CG 阶段不建 VM UI 层)。
     pub title_seen: bool,
     /// 上一帧 VM UI 门控值(false→true 沿触发注册表重放)。
@@ -360,20 +405,37 @@ impl PlayerCore {
                 if !vm_ui_layer_allowed(&lower, allow_vm_ui) {
                     continue;
                 }
-                // 建层(P8.2b 第 2 步):层 id = 资源哈希(bridge 语义),
-                // z=60 段(高于立绘 10、低于台词窗 80;初值待截图对拍)。
-                // position 槽 4/5/6 → x/y(Likely,成果 48 表);重复
-                // CG.SET = upsert 幂等(仅 patch 位置)。
-                let (x, y, _z) = position.unwrap_or((0, 0, 0));
-                if !self.vm_ui_layers.contains(&rid) {
-                    self.vm_ui_layers.push(rid);
+                // 建层(勘误 8):层按 es.BT 基名收敛为一层(id=fnv(base)),
+                // 同钮各态(OFF/OVER/ONOV/NA)只显示优先级最低者。
+                let (base, prio) = vm_ui_base_prio(name.as_bytes());
+                if let Some(&old) = self.vm_ui_prio.get(&base) {
+                    if prio > old {
+                        continue; // 更差态(如 OVER 3 > OFF 0):不覆盖
+                    }
+                }
+                // position 未指定的 CG.SET(只换纹理/patch 族)= 保持现有
+                // 坐标(引擎「未指定槽保持原值」语义,成果 62)。
+                let lid = fnv1a(&base);
+                let (x, y) = match position {
+                    Some((x, y, _z)) => (*x as f32, *y as f32),
+                    None => {
+                        let scene = self.bridge.scene();
+                        match scene.layers.iter().find(|l| l.id == lid) {
+                            Some(l) => (l.x, l.y),
+                            None => (0.0, 0.0),
+                        }
+                    }
+                };
+                // (字段级操作 —— fresh 借 self.vm,不能用整 &mut self 方法)
+                if !self.vm_ui_layers.contains(&lid) {
+                    self.vm_ui_layers.push(lid);
                 }
                 let layer = Layer {
-                    id: rid,
-                    z: 60,
+                    id: lid,
+                    z: vm_ui_z_for_path(&lower),
                     visible: true,
-                    x: x as f32,
-                    y: y as f32,
+                    x,
+                    y,
                     scale_x: 1.0,
                     scale_y: 1.0,
                     alpha: 1.0,
@@ -381,10 +443,33 @@ impl PlayerCore {
                     resource: Some(ResourceId(rid)),
                 };
                 self.bridge.scene_mut().upsert_layer(layer);
+                self.vm_ui_prio.insert(base, prio);
+            }
+            if let yuris_vm::VmEvent::CgAct { id, .. } = ev {
+                // es.BT.XY.SET 宏体 = CGACT 槽 0x0c/0x0d → 注册表 x/y 已
+                // 在 VM 侧落库(成果 82 勘误 4);此处把权威位置同步到
+                // 已存在的 UI 层(XY.SET 晚于 CG.SET 的时序修复)。
+                let Some(name) = id else { continue };
+                let (base, _) = vm_ui_base_prio(name.as_bytes());
+                let lid = fnv1a(&base);
+                if !self.vm_ui_layers.contains(&lid) {
+                    continue;
+                }
+                if let Some((x, y)) = self.vm.cg_position(name) {
+                    let scene = self.bridge.scene_mut();
+                    if let Some(l) = scene_mut_layer(scene, lid) {
+                        l.x = x as f32;
+                        l.y = y as f32;
+                    }
+                }
             }
             if let yuris_vm::VmEvent::CgEnd { id, .. } = ev {
                 if let Some(name) = id {
-                    self.bridge.scene_mut().hide_layer(fnv1a(name.as_bytes()));
+                    let (base, _) = vm_ui_base_prio(name.as_bytes());
+                    let lid = fnv1a(&base);
+                    self.bridge.scene_mut().hide_layer(lid);
+                    self.vm_ui_prio.remove(&base);
+                    self.vm_ui_layers.retain(|&i| i != lid);
                 }
             }
         }
@@ -401,34 +486,85 @@ impl PlayerCore {
         }
     }
 
-    /// 注册表重放(P8.2b):进入游戏时按 VM cg_registry 重建 VM UI 层
-    /// (boot 期被过滤的部件在此恢复;纹理按 fnv(名) 命中已预载集才建层)。
+    /// 按 es.BT 基名 upsert VM UI 层(层 id = fnv(base);同钮各态收敛)。
+    fn upsert_vm_ui_layer(&mut self, base: &[u8], rid: u64, x: f32, y: f32, path_lower: &str) {
+        let lid = fnv1a(base);
+        if !self.vm_ui_layers.contains(&lid) {
+            self.vm_ui_layers.push(lid);
+        }
+        let layer = Layer {
+            id: lid,
+            z: vm_ui_z_for_path(path_lower),
+            visible: true,
+            x,
+            y,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            alpha: 1.0,
+            rotation: 0.0,
+            resource: Some(ResourceId(rid)),
+        };
+        self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// 注册表重放(P8.2b):进入游戏时按 VM cg_registry 重建 VM UI 层。
+    /// 同钮各态(OFF/OVER/ONOV/NA)取最优者一层;诊断清单逐条打印
+    /// (谁上屏/坐标/谁被跳,便于对拍)。
     fn rebuild_vm_ui(&mut self) {
-        let mut n = 0usize;
-        for (name, x, y) in self.vm.cg_registry_snapshot() {
+        // base → (prio, rid, x, y, path_lower)
+        let mut best: HashMap<Vec<u8>, (u8, u64, f32, f32, String)> = HashMap::new();
+        let mut skipped = 0usize;
+        for (name, x, y, file) in self.vm.cg_registry_snapshot() {
+            let Some(f) = file else {
+                skipped += 1;
+                continue; // 注册件无 FILE(纹理经他路):不进层
+            };
+            let path = String::from_utf8_lossy(&f).into_owned();
+            let lower = path.to_ascii_lowercase();
+            if !vm_ui_layer_allowed(&lower, true) {
+                continue;
+            }
             let rid = fnv1a(&name);
             if !self.loaded.contains(&rid) {
-                continue; // 无纹理(预载期被过滤/解析失败)不建层
+                skipped += 1;
+                continue; // 无纹理(预载期解析失败)不建层
             }
-            if !self.vm_ui_layers.contains(&rid) {
-                self.vm_ui_layers.push(rid);
-            }
-            let layer = Layer {
-                id: rid,
-                z: 60,
-                visible: true,
-                x: x as f32,
-                y: y as f32,
-                scale_x: 1.0,
-                scale_y: 1.0,
-                alpha: 1.0,
-                rotation: 0.0,
-                resource: Some(ResourceId(rid)),
+            let (base, prio) = vm_ui_base_prio(&name);
+            let better = match best.get(&base) {
+                Some((old_prio, _, _, _, _)) => prio <= *old_prio,
+                None => true,
             };
-            self.bridge.scene_mut().upsert_layer(layer);
+            if better {
+                best.insert(base, (prio, rid, x as f32, y as f32, lower));
+            }
+        }
+        let mut n = 0usize;
+        let mut inv: Vec<String> = Vec::new();
+        for (base, (prio, rid, x, y, lower)) in best {
+            self.upsert_vm_ui_layer(&base, rid, x, y, &lower);
+            self.vm_ui_prio.insert(base.clone(), prio);
+            let nm = String::from_utf8_lossy(&base);
+            let dir = lower
+                .trim_start_matches(r"cgsys\")
+                .split('\\')
+                .next()
+                .unwrap_or("?");
+            if inv.len() < 60 {
+                inv.push(format!("  [{dir}] {nm} @({x:.0},{y:.0})"));
+            }
             n += 1;
         }
-        eprintln!("[player] VM UI 重放 {n} 层");
+        if n > 0 {
+            // VM 消息窗部件已上屏 → 撤掉 scenario 近似底框(双重叠层修复)
+            self.bridge.scene_mut().hide_layer(SC_WIN);
+        }
+        eprintln!(
+            "[player] VM UI 重放 {n} 层(跳 {skipped};注册 {} 条)",
+            self.vm.cg_registry_len()
+        );
+        for l in &inv {
+            eprintln!("[vm-ui]{l}");
+        }
     }
 
     /// 读 scenario 资源并上传;返回 ResourceId。
@@ -1573,7 +1709,11 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn show_text(&mut self, _line_id: Option<u32>, lt: &str, _le: &str) {
-        self.show_window_frame();
+        // VM 消息窗部件已上屏时不再画近似底框(双重叠层修复,P8.2b 第 3 步;
+        // 原生消息窗 = VM 部件自绘,scenario 只出文字)
+        if self.vm_ui_layers.is_empty() {
+            self.show_window_frame();
+        }
         // 繁→简(显示层转换,不改剧本数据;fast2s 单字映射 + 词汇表)
         let lt: String = fast2s::convert(lt);
         let Some(rid) = self.render_text_layer(&lt) else {
@@ -1644,6 +1784,7 @@ impl ScenarioHost for PlayerCore {
         for id in self.vm_ui_layers.drain(..) {
             scene.hide_layer(id);
         }
+        self.vm_ui_prio.clear();
         self.title_seen = true;
         // 全屏底层(path, x, y, id)→ 拉伸全屏
         let layers: [(&str, i64, i64, u64); 5] = [
@@ -2202,6 +2343,7 @@ mod title_se_tests {
             bgm_page: 0,
             vm_ui_layers: Vec::new(),
             title_seen: false,
+            vm_ui_prio: HashMap::new(),
             vm_ui_allowed_prev: false,
             game_dir: std::path::PathBuf::new(),
         }
@@ -2308,6 +2450,7 @@ mod subui_tests {
             bgm_page: 0,
             vm_ui_layers: Vec::new(),
             title_seen: false,
+            vm_ui_prio: HashMap::new(),
             vm_ui_allowed_prev: false,
             game_dir: std::path::PathBuf::new(),
         }
@@ -2409,16 +2552,41 @@ mod subui_tests {
 
     #[test]
     fn vm_ui_filter_rules() {
-        // P8.2b 第 1 步(成果 82):debug 覆盖层/标题等待期/非 main 通道不建层
+        // P8.2b(成果 82/勘误 7):debug 覆盖层/标题期/title-extra 通道不建层;
+        // main/saveload/config 等全 cgsys 系统 UI 放行
         let main = "cgsys/main/button/type1/tip_meswindow";
         let main_bs = r"cgsys\main\button\type1\tip_meswindow";
         let debug = r"cgsys\debug\btn_back";
         let title = "cgsys/title/btn_start_off";
+        let extra = r"cgsys\extra\btn_tab_cgmode_bt3n";
+        let saveload = r"cgsys\saveload\btn_back_off";
         assert!(vm_ui_layer_allowed(main, true));
         assert!(vm_ui_layer_allowed(main_bs, true));
+        assert!(vm_ui_layer_allowed(saveload, true));
         assert!(!vm_ui_layer_allowed(main, false)); // 标题等待期
         assert!(!vm_ui_layer_allowed(debug, true)); // debug 覆盖层
-        assert!(!vm_ui_layer_allowed(title, true)); // 非 main 通道(内置标题接管)
+        assert!(!vm_ui_layer_allowed(title, true)); // 内置标题接管
+        assert!(!vm_ui_layer_allowed(extra, true)); // EXTRA 子画面接管
+    }
+
+    #[test]
+    fn vm_ui_base_prio_collapses_states() {
+        // 勘误 8:同钮各态同基名,优先级 OFF(0) 最低 → 只显示 OFF 层
+        let off = b"ES.GAMEMAIN.BTN.VOICEM.BT.OFF=0=1";
+        let over = b"ES.GAMEMAIN.BTN.VOICEM.BT.OVER=0=1";
+        let onov = b"ES.GAMEMAIN.BTN.VOICEM.BT.ONOV=0=1";
+        let na = b"ES.GAMEMAIN.TIP.NAMEW.TXM.BT.NA=0=1";
+        let plain = b"some-cg-name";
+        let base_off = vm_ui_base_prio(off);
+        let base_over = vm_ui_base_prio(over);
+        let base_onov = vm_ui_base_prio(onov);
+        let base_na = vm_ui_base_prio(na);
+        assert_eq!(base_off.0, base_over.0);
+        assert_eq!(base_over.0, base_onov.0);
+        assert!(base_off.1 < base_over.1); // OFF(0) < OVER(2)
+        assert!(base_over.1 < base_onov.1); // OVER(2) < ONOV(3)
+        assert!(base_na.1 > base_off.1); // NA(4) 最差但 NA-only 也显示
+        assert_eq!(vm_ui_base_prio(plain), (plain.to_vec(), 0)); // 无 .BT. 原样
     }
 
     #[test]

@@ -152,6 +152,7 @@ fn main() {
         bgm_page: 0,
         vm_ui_layers: Vec::new(),
         title_seen: false,
+        vm_ui_prio: std::collections::HashMap::new(),
         vm_ui_allowed_prev: false,
         game_dir: game_dir.clone(),
     };

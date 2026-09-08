@@ -601,6 +601,8 @@ pub struct CgState {
     pub img_w: i64,
     /// 装载图像高(CGINFO 槽 14 应答;watch oracle 实证)。
     pub img_h: i64,
+    /// 最近一次非空 FILE 槽(纹理路径;P8.2b 重放按路径分 z 带用)。
+    pub file: Option<Vec<u8>>,
     /// 色(COLOR;CGINFO 槽 24 查询,CG 命令无对应槽)。
     pub color: i64,
 }
@@ -615,6 +617,7 @@ impl Default for CgState {
             sy: 1,
             img_w: 0,
             img_h: 0,
+            file: None,
             color: 0x80_80_80,
         }
     }
@@ -660,13 +663,26 @@ pub struct GroupVm {
 }
 
 impl GroupVm {
-    /// CG 注册表快照(P8.2b 重放:名称 SJIS 字节 + 注册 x/y;注册序)。
+    /// CG 注册表快照(P8.2b 重放:名称 SJIS 字节 + 注册 x/y + 最近 FILE)。
     /// 播放器进游戏时按此重建 VM UI 层(纹理已在播放器侧按 fnv(名) 预载)。
-    pub fn cg_registry_snapshot(&self) -> Vec<(Vec<u8>, i64, i64)> {
+    pub fn cg_registry_snapshot(&self) -> Vec<(Vec<u8>, i64, i64, Option<Vec<u8>>)> {
         self.cg_registry
             .iter()
-            .map(|(k, v)| (k.clone(), v.x, v.y))
+            .map(|(k, v)| (k.clone(), v.x, v.y, v.file.clone()))
             .collect()
+    }
+
+    /// 按名称查注册表当前 x/y(es.BT.XY.SET 经 CGACT 落库后的权威位置;
+    /// ASCII 名精确匹配,SJIS 名经 lossy 往返可能失配 → None)。
+    pub fn cg_position(&self, name: &str) -> Option<(i64, i64)> {
+        self.cg_registry
+            .get(name.as_bytes())
+            .map(|st| (st.x, st.y))
+    }
+
+    /// 注册表条数(诊断日志用)。
+    pub fn cg_registry_len(&self) -> usize {
+        self.cg_registry.len()
     }
 
     /// 装载脚本。组模型校验失败(非 v555 形态)→ `Err`。
@@ -1762,6 +1778,11 @@ impl GroupVm {
                             if let Some((w, h)) = image_dims {
                                 st.img_w = w;
                                 st.img_h = h;
+                            }
+                            if let Some(f) = &file {
+                                if !f.is_empty() {
+                                    st.file = Some(f.clone());
+                                }
                             }
                         }
                     }

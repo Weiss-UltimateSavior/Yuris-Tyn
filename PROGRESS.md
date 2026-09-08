@@ -3574,6 +3574,15 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
   重放(进游戏沿触发)+ 生命周期分层(reset 不隐藏 VM UI 层,隐藏移入
   title_screen —— 系统 UI 跨场景持续,原生语义)。工具:`tmp_label_lookup.rs`
   (YSLB 查址)、`tmp_yst_dump.rs` 增 B0 tag 输出。
+- **勘误 5(重放 0 层)**:通道过滤误置于纹理预载之前 → boot 期零预载,
+  重放全跳过;修正为预载与建层解耦(非 debug 一律预载)。
+- **勘误 6(叠层/位置,实机截图驱动)**:① z 全固定 60 → 按路径分带
+  (`btn_`=95 台词上 / 底框提示=70 台词下;实现选择,原生 Z 槽 Unknown);
+  ② position=None 的 CG.SET 把坐标打回 (0,0)(左上角方块根因)→ 未指定
+  槽保持现有坐标(成果 62 保持原值语义);③ XY.SET 晚于 CG.SET → `CgAct`
+  事件经 `GroupVm::cg_position` 同步层坐标(`CgState` 增 file 字段,快照
+  四元组);④ 双重底框 → VM 消息窗上屏后撤画 SC_WIN;⑤ 重放泄漏 →
+  与建层同一 main 通道过滤。详见 in-game-ui-plan.md 勘误 6。
 
 **验证**:
 
