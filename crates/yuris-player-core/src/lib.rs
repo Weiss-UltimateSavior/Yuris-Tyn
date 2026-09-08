@@ -1926,6 +1926,13 @@ impl Player {
             "file": file, "label": label, "globals": globals,
         });
         let path = self.game_dir.join("save").join("yskernel_qsave.json");
+        // save/ 目录可能不存在(原生引擎首次存档时自建;本目录为干净安装)
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("[save] 目录创建失败: {e}");
+                return;
+            }
+        }
         match std::fs::write(&path, serde_json::to_vec_pretty(&doc).unwrap()) {
             Ok(()) => eprintln!("[save] 快存 {file}/{label} → {}", path.display()),
             Err(e) => eprintln!("[save] 写入失败: {e}"),
