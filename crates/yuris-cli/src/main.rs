@@ -141,6 +141,14 @@ fn main() {
         request_title_load: false,
         request_quit: false,
         globals: std::collections::HashMap::new(),
+        subui: yuris_player_core::SubUi::None,
+        ui_buttons: Vec::new(),
+        save_entries: Vec::new(),
+        request_load_path: None,
+        ev_list: Vec::new(),
+        cg_page: 0,
+        cg_view: None,
+        bgm_tracks: Vec::new(),
         game_dir: game_dir.clone(),
     };
     let mut player = Player {

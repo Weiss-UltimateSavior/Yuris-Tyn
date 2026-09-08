@@ -1,7 +1,7 @@
 # 标题界面按钮问题分析与计划
 
-> 状态:P1 保真度核心已完成(成果 78/79);P2 反馈层已完成(sse 映射 + SE 接入,成果 80);
-> P3 功能画面存在遗留差距。
+> 状态:P1 保真度核心 + P2 反馈层 + P3 功能画面均已完成(成果 78/79/80/81)。
+> 遗留:config 按钮待原生配置画面实装(G4);原生 .sd 存档装载链未实现(LOAD 用本实现 JSON 存档)。
 > 方法:证据等级驱动逆向(Confirmed / Likely / Hypothesis / Unknown)。
 > 取证日期:2026-09-08。
 
@@ -115,10 +115,10 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
 | G1 | ~~Start 直接 `wait=None` 依赖兜底~~ 已修(成果 78:Start/Outline 写 G1 走 `\GO.G.IF`) | 已关闭 |
 | G2 | ~~按钮默认绘 `_on` 高亮~~ 已修(成果 78:默认 `_off`) | 已关闭 |
 | G3 | ~~无悬停/按下/`_na` 切换~~ 已修(成果 78 三态 + 成果 79 `_na`:仅 lastload,`btn_load` 无 `_na` 变体——**原"LOAD/CONTINUE 用 `btn_*_na`"表述证伪**) | Confirmed |
-| G4 | 按钮集 6 个(arasuji 已补,成果 79),缺 `config`(1477,745)/`manual`/`web`(后两者仅 off/over 双态;SCENE2/3 的 true/scenejump 不实装) | Confirmed |
+| G4 | 按钮集 6 个(arasuji 已补,成果 79):`manual`/`web` **明确裁剪**(成果 81 —— 站外跳转/说明书类,内核无对应功能);`config` 待原生配置画面(s250~254)实装后注册,不设占位钮 | Confirmed(取舍记录) |
 | G5 | ~~悬停/点击无 SE;sse01~06 语义映射未验证~~ 已修(成果 80:映射表建立 + 悬停/决定音接入;映射见 2.3。sse01/04/05 动态派发语义仍 Unknown,不影响标题) | 已关闭 |
-| G6 | `title_load()`/`title_extra()` 为桩:LOAD/EXTRA 画面未实装 | Confirmed |
-| G7 | END 疑似有确认对话框(`btn_confirm_title_bt4`)未实现 | Hypothesis |
+| G6 | ~~`title_load()`/`title_extra()` 为桩~~ 已修(成果 81:LOAD 存档列表 + EXTRA 落地菜单/CG 分页鉴赏/BGM 点播) | 已关闭 |
+| G7 | ~~END 确认对话框未实现~~ 已修(成果 81:`confirm/dialog_end.png` + 通用 `btn_yes/btn_no` 三态钮;`btn_confirm_title_bt4` 为 config 系变体,未采用) | 已关闭 |
 
 ## 4. 行动计划
 
@@ -170,12 +170,29 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
       点击决定音/灰钮静默,最小 GroupVm 夹具);workspace 全绿;
       release 构建通过;**实机目测待用户确认**。
 
-### P3 功能补全
+### P3 功能补全(成果 81 完成)
 
-- [ ] **P3-1 LOAD 画面实装**(`title_load()`):存档列表 UI + 读档 → 跳对应剧本。
-- [ ] **P3-2 EXTRA 画面实装**(`title_extra()`):CG/BGM 鉴赏模式(素材已确认存在 `cgsys\extra\*`)。
-- [ ] **P3-3 END 确认对话框**:验证 `btn_confirm_title_bt4` 用途后决定是否实现。
-- [ ] **P3-4 config/manual/web 按钮取舍**:manual/web 为站外/说明书类,建议明确裁剪并记录。
+- [x] **P3-1 LOAD 画面实装**(成果 81):`open_load()` —— `saveload/back_load.png`
+      整屏 + 存档行(扫描 `save/yskernel_*.json`,mtime 排序,`fmt_unix_time`
+      civil 算法显示时间,最多 8 行)+ 戻る(`saveload/btn_back` 三态)。
+      槽位点击 → `request_load_path` → `Player::tick` 走 `restore_from(path)`
+      (quick_load 泛化共用;读档完成 `start()` 重置)。空列表 =
+      「セーブデータがありません」。**取舍**:原生 save/*.sd(YSVM 任务态)
+      装载链未实现,列表为本实现 JSON 快存(与 F5/F9 同源)。
+- [x] **P3-2 EXTRA 画面实装**(成果 81):`open_extra_menu()` 落地菜单
+      (`btn_tab_{cg,bgmmode}` 标签钮 + 戻る)→ **CG 鉴赏** `open_extra_cg()`:
+      `cg\ev\*.png`(94 张)分页 4×3,缩略图解码 + cover 降采样直传
+      (`load_thumb`),点击全图查看、再点返回、前/後页;**BGM 鉴赏**
+      `open_extra_bgm()`:曲目两列 32 席点播(bgm 包枚举,`play_bgm`
+      通道复用),戻る停止播放。**取舍**:原生 CG 开启标记(.sd flags)
+      未逆向 → 不设锁全量展示;布局锚点为布置选择(Likely)。
+- [x] **P3-3 END 确认对话框**(成果 81):`request_quit()` → `open_confirm_end()`:
+      压暗 + `confirm/dialog_end.png`(531×168)+ 通用 `confirm/btn_yes/btn_no`
+      三态钮(146×45)。はい → `request_quit` 真退出;いいえ → 返回标题。
+      `btn_confirm_title_bt4`(config 系变体)未采用。
+- [x] **P3-4 config/manual/web 按钮取舍**(成果 81 裁剪记录):`manual`/`web`
+      = 站外跳转/说明书类,内核无对应功能 → **明确裁剪**;`config` 需原生
+      配置画面(s250~s254 系统剧本)实装后注册,不设占位钮。
 
 ## 5. 取证附件
 
@@ -183,5 +200,8 @@ YSTB 静态解码得 **SCENE1 原生布局/绑定真值**(Confirmed):
 - SE 映射工具(成果 80):`crates/yuris-vm/examples/tmp_sse_scan.rs`(全语料
   sse 扫描+组归属)、`tmp_sse_count.rs`(槽位级计数)、
   `crates/yuris-resource/examples/tmp_se_duration.rs`(symphonia 时长);
+- P3 素材取证(成果 81):`crates/yuris-vm/examples/tmp_p3_probe.rs`
+  (YpfReader 鲁棒解析:saveload/confirm/extra 计数 + PNG 尺寸 +
+  thumb_cg↔ev 直映验证);
 - 三态样张:`/tmp/title_btn/cgsys_title_btn_start_{off,on,over}.png`、`btn_lastload_na.png`、`btn_arasuji_off.png`;
 - 剧本转储:`scenario_start.txt`(889 B)/ `start.txt`(54 B)/ `ara.txt`(18061 B),工具 `/tmp/dump_sc.py`。

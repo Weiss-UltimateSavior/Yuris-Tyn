@@ -3456,6 +3456,64 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
 
 ***
 
+## 2026-09-08 标题子画面三件套(P3,成果 81)
+
+### 成果 81:LOAD 存档列表 / EXTRA 鉴赏(CG+BGM)/ END 确认框 —— **Confirmed(代码+单测)/Likely(布局与取舍,原生未对照)**
+
+**先导升级**:P2 实机确认通过(用户)—— 成果 80 的 sse 映射「悬停 sse02 /
+决定 sse03」由 Likely 升 **Confirmed**(实机可闻;绑定面本已 Confirmed)。
+
+**取证**(`crates/yuris-vm/examples/tmp_p3_probe.rs`,YpfReader 鲁棒解析
+—— 严格 YpfArchive 对 cg.ypf 报 name is not ASCII,known-issues 2.4 工具链缺口再现):
+
+- LOAD:`cgsys\saveload\back_load.png` **1920×1080** 整屏背景 +
+  `saveload\btn_back_{off,on,over}` 186×87 + `load\btn_tab_load_*` 237×53;
+- 确认框:`confirm\dialog_end.png` **531×168** + 通用
+  `confirm\btn_yes/btn_no_{off,on,over}` 146×45(三态齐备);
+- EXTRA:`extra\{cgmode,bgmmode,vomode}\back.png`(bgmmode 1920×1080)+
+  标签钮 `btn_tab_{cg,bgmmode}[_bt3n/_on/_na]`;
+- CG 画廊语料:cg.ypf `cg\ev\*.png` **94 张**、`cg\thumb_cg\*.png` 13 张
+  (thumb→ev 同名直映 **13/13**);bgmmode/btn_m×52、tip_m×48;
+- save/ 目录启动为空(无原生 .sd 存档)。
+
+**实现**(`yuris-player-core`;scenario 播放器零改动 —— 全部经既有
+`poll_title_menu` 路由,`Wait::TitleMenu` 下子画面消费点击):
+
+- **`SubUi` 状态机**(None/Load/ExtraMenu/ExtraCg/ExtraBgm/ConfirmEnd)+
+  UI_* 层 id 段(0x5C_8000/9000/B000/D000/E000_0000,z 50..61,与标题/
+  台词窗/选择肢错开);
+- **LOAD**(title_load):back_load 整屏 + 存档行(扫描 `save/yskernel_*.json`,
+  mtime 新在前,`fmt_unix_time` civil 算法显示时间,最多 8 行,空列表 =
+  「セーブデータがありません」)+ 戻る;槽位点击 → `request_load_path` →
+  `Player::tick` 走 **`restore_from(path)`**(quick_load 泛化共用);
+- **EXTRA**(title_extra):落地菜单(cgmode/bgmmode 标签 + 戻る)→
+  **CG 鉴赏**:ev 94 张分页 4×3,`load_thumb` 解码 + cover 降采样直传,
+  点击全图查看 / 再点返回 / 前·後页;**BGM 鉴赏**:曲目两列 32 席点播
+  (bgm 包枚举,play_bgm 通道复用;戻る停止);
+- **END**(request_quit):压暗 + dialog_end + btn_yes/btn_no;
+  **はい → request_quit 真退出;いいえ → 返回标题(sse06)**;
+- 音效:悬停 sse02 / 决定 sse03 / 戻る·いいえ **sse06**(成果 80 取消音
+  映射首次落地);`tri_state_pass` 公共体(标题/子画面按钮共用);
+- 防御:素材未命中保留兜底命中区(不静默失效);reset_title_layers /
+  close_subui / restore_from 三处统一清理子画面。
+
+**取舍(如实记录)**:原生 CG 开启标记(.sd flags)未逆向 → 鉴赏不设锁
+全量展示;子画面布局锚点为布置选择,原生坐标未逐像素对照(Likely);
+原生 save/*.sd 装载链(YSSD→YSVM 任务态恢复)未实现 → LOAD 列表为
+本实现 JSON 快存(F5/F9 同源);manual/web 钮明确裁剪,config 待
+配置画面实装(G4,不设占位钮)。
+
+**验证**:
+
+- `cargo test -p yuris-player-core` **11 通过**(新增 3:
+  `end_confirm_yes_quits_no_stays` / `load_screen_slot_click_requests_restore`
+  (临时目录真存档)/ `extra_menu_nav_and_back`);
+- `cargo test --workspace` **49 套件全绿**;`cargo build --release -p yuris-cli` 通过;
+- **实机(待用户)**:标题 LOAD → 存档列表;EXTRA → CG 分页查看 + BGM 点播;
+  END → 确认框 いいえ 留在标题 / はい 退出;全程悬停/决定/取消音效。
+
+***
+
 ## 更新约定
 
 每次更新本文件时：

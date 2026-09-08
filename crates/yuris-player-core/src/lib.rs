@@ -62,8 +62,65 @@ pub fn letterbox_logical(ww: u32, wh: u32, px: f64, py: f64) -> (i64, i64) {
     ((px as f32 * s) as i64, (py as f32 * s) as i64)
 }
 
+/// Unix 秒 → "YYYY-MM-DD HH:MM"(civil 算法,无外部依赖;LOAD 存档行显示)。
+fn fmt_unix_time(secs: u64) -> String {
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let (h, mi) = (rem / 3600, (rem % 3600) / 60);
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{mi:02}")
+}
+
 fn scene_mut_layer(scene: &mut yuris_scene::Scene, id: u64) -> Option<&mut Layer> {
     scene.layers.iter_mut().find(|l| l.id == id)
+}
+
+/// 三态按钮公共体(标题按钮与子画面按钮共用):按光标/按下帧计算每钮的
+/// 目标态并切换层资源;返回 (层资源更新, 是否有悬停进入边沿)。
+/// `_na` 灰化钮(active=false)不参与。
+fn tri_state_pass(
+    buttons: &mut [TitleButton],
+    cursor: (i64, i64),
+    clicked: bool,
+) -> (Vec<(u64, ResourceId)>, bool) {
+    let (cx, cy) = cursor;
+    let mut updates: Vec<(u64, ResourceId)> = Vec::new();
+    let mut hover_entered = false;
+    for b in buttons {
+        if !b.active {
+            continue;
+        }
+        let [x, y, w, h] = b.rect;
+        let hover =
+            cx >= x as i64 && cx < (x + w) as i64 && cy >= y as i64 && cy < (y + h) as i64;
+        if hover && !b.hovered {
+            hover_entered = true;
+        }
+        b.hovered = hover;
+        let want = if hover && clicked {
+            TITLE_BTN_OVER
+        } else if hover {
+            TITLE_BTN_ON
+        } else {
+            TITLE_BTN_OFF
+        };
+        if want != b.shown {
+            if let Some(rid) = b.rids[want] {
+                b.shown = want;
+                updates.push((b.id, rid));
+            }
+        }
+    }
+    (updates, hover_entered)
 }
 
 /// scenario 层资源/图层 id 基(与 SceneBridge 的 VM 层错开)。
@@ -93,6 +150,46 @@ pub const TITLE_SE_HOVER: &str = "sse02";
 /// 标题按钮决定音(sysse/sse03)。es.BT.SE.SET 第二参数(普通按钮 316 组);
 /// BACK 型取消钮为 sse06(128 组)—— 参数 2 随按钮语境变化,标题六钮均普通型。
 pub const TITLE_SE_DECIDE: &str = "sse03";
+/// 取消/戻る音(sysse/sse06)。es.BT.SE.SET 第二参数的 BACK 型取值(成果 80)。
+pub const TITLE_SE_CANCEL: &str = "sse06";
+
+/// 子画面层 id 基(P3:LOAD / EXTRA / CG 鉴赏 / BGM 鉴赏 / END 确认;
+/// 与标题 0x5C_7000_* 与台词窗 SC_* 错开;z 在 50..=61 段)。
+pub const UI_LOAD_BASE: u64 = 0x5C_8000_0000;
+pub const UI_EXTRA_BASE: u64 = 0x5C_9000_0000;
+pub const UI_CG_BASE: u64 = 0x5C_B000_0000;
+pub const UI_BGM_BASE: u64 = 0x5C_D000_0000;
+pub const UI_CONFIRM_BASE: u64 = 0x5C_E000_0000;
+
+/// 子画面路由钮 id(常量而非算术 —— match 模式需要)。
+pub const UI_LOAD_BACK: u64 = UI_LOAD_BASE + 1;
+pub const UI_EXTRA_CG_TAB: u64 = UI_EXTRA_BASE + 1;
+pub const UI_EXTRA_BGM_TAB: u64 = UI_EXTRA_BASE + 2;
+pub const UI_EXTRA_BACK: u64 = UI_EXTRA_BASE + 3;
+pub const UI_CG_BACK: u64 = UI_CG_BASE + 1;
+pub const UI_CG_PREV: u64 = UI_CG_BASE + 0x90;
+pub const UI_CG_NEXT: u64 = UI_CG_BASE + 0x91;
+pub const UI_BGM_BACK: u64 = UI_BGM_BASE + 1;
+pub const UI_CONFIRM_YES: u64 = UI_CONFIRM_BASE + 2;
+pub const UI_CONFIRM_NO: u64 = UI_CONFIRM_BASE + 3;
+
+/// 播放器子画面状态(P3)。均在 `Wait::TitleMenu` 等待下叠加显示,
+/// 点击经 `poll_title_menu` 路由,scenario 播放器不感知。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubUi {
+    /// 无子画面(标题菜单本体)。
+    None,
+    /// LOAD 存档列表(back_load 整屏;成果 81)。
+    Load,
+    /// EXTRA 落地菜单(CG/BGM 鉴赏入口;成果 81)。
+    ExtraMenu,
+    /// EXTRA CG 鉴赏(cg\ev 分页缩略图 + 全图查看;成果 81)。
+    ExtraCg,
+    /// EXTRA BGM 鉴赏(曲目列表点播;成果 81)。
+    ExtraBgm,
+    /// END 确认对话框(dialog_end + yes/no;成果 81)。
+    ConfirmEnd,
+}
 
 /// 标题按钮:命中区 + 三态资源 + 当前显示态(成果 78;坐标/绑定成果 79)。
 pub struct TitleButton {
@@ -152,6 +249,20 @@ pub struct PlayerCore {
     /// 全局槽(\GO.G.IF 的 G=n;仿真内部存储 —— 引擎真值映射 Unknown/B5。
     /// 成果 78 勘误:原 `@50[n]` 映射被运行时证伪,@50 dims=[1],idx≥1 越界)。
     pub globals: HashMap<usize, i64>,
+    /// 子画面状态(P3;close_subui 复位)。
+    pub subui: SubUi,
+    /// 子画面三态按钮(戻る/yes/no/标签页;悬停边沿播悬停音)。
+    pub ui_buttons: Vec<TitleButton>,
+    /// LOAD:存档条目(路径,显示标签;mtime 排序,新在前)。
+    pub save_entries: Vec<(std::path::PathBuf, String)>,
+    /// LOAD 选中条目(Player::tick 消费走 restore_from)。
+    pub request_load_path: Option<std::path::PathBuf>,
+    /// EXTRA CG:ev 清单(剥根规范名)与页码、正在查看的全图层。
+    pub ev_list: Vec<String>,
+    pub cg_page: usize,
+    pub cg_view: Option<ResourceId>,
+    /// EXTRA BGM:曲目名(去目录/扩展名)。
+    pub bgm_tracks: Vec<String>,
     #[allow(dead_code)]
     pub game_dir: std::path::PathBuf,
 }
@@ -251,42 +362,37 @@ impl PlayerCore {
     }
 
     /// 标题按钮三态切换(每帧;悬停 `_on`、按下帧 `_over`,其余 `_off`;成果 78)。
-    /// 悬停**进入**命中区的边沿播悬停音(P2-2,成果 80)。
+    /// 悬停**进入**命中区的边沿播悬停音(P2-2,成果 80)。子画面打开时让位。
     fn update_title_buttons(&mut self) {
-        if self.title_buttons.is_empty() {
+        if self.subui != SubUi::None || self.title_buttons.is_empty() {
             return;
         }
-        let (cx, cy) = self.cursor_logical;
-        let clicked = self.frame_clicked;
-        let mut updates: Vec<(u64, ResourceId)> = Vec::new();
-        let mut hover_entered = false;
-        for b in &mut self.title_buttons {
-            if !b.active {
-                continue; // `_na` 灰化态:单素材,不参与三态(成果 79)
-            }
-            let [x, y, w, h] = b.rect;
-            let hover = cx >= x as i64
-                && cx < (x + w) as i64
-                && cy >= y as i64
-                && cy < (y + h) as i64;
-            if hover && !b.hovered {
-                hover_entered = true;
-            }
-            b.hovered = hover;
-            let want = if hover && clicked {
-                TITLE_BTN_OVER
-            } else if hover {
-                TITLE_BTN_ON
-            } else {
-                TITLE_BTN_OFF
-            };
-            if want != b.shown {
-                if let Some(rid) = b.rids[want] {
-                    b.shown = want;
-                    updates.push((b.id, rid));
-                }
+        let (updates, hover_entered) = tri_state_pass(
+            &mut self.title_buttons,
+            self.cursor_logical,
+            self.frame_clicked,
+        );
+        if hover_entered {
+            self.play_sysse(TITLE_SE_HOVER);
+        }
+        if updates.is_empty() {
+            return;
+        }
+        let scene = self.bridge.scene_mut();
+        for (id, rid) in updates {
+            if let Some(layer) = scene_mut_layer(scene, id) {
+                layer.resource = Some(rid);
             }
         }
+    }
+
+    /// 子画面按钮三态切换(P3;机制与标题按钮同,悬停进入边沿播悬停音)。
+    fn update_ui_buttons(&mut self) {
+        if self.ui_buttons.is_empty() {
+            return;
+        }
+        let (updates, hover_entered) =
+            tri_state_pass(&mut self.ui_buttons, self.cursor_logical, self.frame_clicked);
         if hover_entered {
             self.play_sysse(TITLE_SE_HOVER);
         }
@@ -471,6 +577,645 @@ impl PlayerCore {
             }
         }
     }
+
+    // ================= P3 子画面(LOAD / EXTRA / END 确认;成果 81) =================
+
+    /// 关闭子画面:隐藏全部 UI_* 层、清按钮与查看态,回到标题菜单。
+    fn close_subui(&mut self) {
+        let scene = self.bridge.scene_mut();
+        for base in [
+            UI_LOAD_BASE,
+            UI_EXTRA_BASE,
+            UI_CG_BASE,
+            UI_BGM_BASE,
+            UI_CONFIRM_BASE,
+        ] {
+            for i in 0..0x100u64 {
+                scene.hide_layer(base + i);
+            }
+        }
+        self.ui_buttons.clear();
+        self.cg_view = None;
+        self.subui = SubUi::None;
+    }
+
+    /// 子画面三态图按钮(states = 素材后缀组;命中区 rect 用素材实际尺寸,
+    /// 素材未命中时保留 rect 兜底命中区 —— 无图可点,不静默失效)。
+    fn ui_button(&mut self, id: u64, rect: [f32; 4], base_path: &str, states: [&str; 3], z: i32) {
+        let mut rids: [Option<ResourceId>; 3] = [None, None, None];
+        for (i, sfx) in states.iter().enumerate() {
+            rids[i] = self.load_scenario_image(&format!("{base_path}{sfx}"));
+        }
+        let (iw, ih) = rids
+            .iter()
+            .flatten()
+            .next()
+            .copied()
+            .and_then(|rid0| {
+                self.backend
+                    .as_ref()
+                    .and_then(|b| b.image_size(rid0.0))
+            })
+            .unwrap_or((rect[2] as u32, rect[3] as u32));
+        if rids[TITLE_BTN_OFF].is_none() {
+            eprintln!("[scenario] 子画面按钮素材未命中: {base_path}(命中区保留)");
+        }
+        self.ui_buttons.push(TitleButton {
+            rect: [rect[0], rect[1], iw as f32, ih as f32],
+            id,
+            rids,
+            shown: TITLE_BTN_OFF,
+            hovered: false,
+            active: true,
+        });
+        let Some(rid0) = rids[TITLE_BTN_OFF] else {
+            return;
+        };
+        let layer = Layer {
+            id,
+            z,
+            visible: true,
+            x: rect[0],
+            y: rect[1],
+            scale_x: 1.0,
+            scale_y: 1.0,
+            alpha: 1.0,
+            rotation: 0.0,
+            resource: Some(rid0),
+        };
+        self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// 子画面白字文本(无 backend = 无层,不 panic)。
+    fn ui_text(&mut self, id: u64, text: &str, x: f32, y: f32, z: i32) {
+        let Some(rid) = self.render_text_layer(text) else {
+            return;
+        };
+        let layer = Layer {
+            id,
+            z,
+            visible: true,
+            x,
+            y,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            alpha: 1.0,
+            rotation: 0.0,
+            resource: Some(rid),
+        };
+        self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// 子画面纯色层(压暗/兜底底图;1×1 RGBA 拉伸)。
+    fn ui_fill(&mut self, id: u64, color: [u8; 4], z: i32) {
+        let rid = ResourceId(
+            0x5C_F000_0000
+                | ((color[0] as u64) << 16)
+                | ((color[1] as u64) << 8)
+                | color[2] as u64,
+        );
+        if !self.loaded.contains(&rid.0) {
+            if let Some(b) = self.backend.as_mut() {
+                let _ = b.load_image_rgba(rid, &color, 1, 1);
+                self.loaded.insert(rid.0);
+            }
+        }
+        let layer = Layer {
+            id,
+            z,
+            visible: true,
+            x: 0.0,
+            y: 0.0,
+            scale_x: LOGICAL_W,
+            scale_y: LOGICAL_H,
+            alpha: 1.0,
+            rotation: 0.0,
+            resource: Some(rid),
+        };
+        self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// ev 全图解码 → 缩略图 RGBA 直传(cell 尺寸 cover 裁剪;解码失败跳过)。
+    fn load_thumb(&mut self, id: u64, path: &str, x: f32, y: f32, w: f32, h: f32) {
+        let Some(data) = self.index.read_cg_bytes(path) else {
+            return;
+        };
+        let Ok(img) = image::load_from_memory(&data) else {
+            return;
+        };
+        let thumb = img.resize_to_fill(w as u32, h as u32, image::imageops::FilterType::Triangle);
+        let rgba = thumb.to_rgba8();
+        let rid = ResourceId(0x5C_A000_0000 | (fnv1a(path.as_bytes()) & 0xFFFF_FFFF));
+        let uploaded = match self.backend.as_mut() {
+            Some(b) => b
+                .load_image_rgba(rid, rgba.as_raw(), rgba.width(), rgba.height())
+                .is_ok(),
+            None => false,
+        };
+        if !uploaded {
+            return;
+        }
+        self.loaded.insert(rid.0);
+        let layer = Layer {
+            id,
+            z: 51,
+            visible: true,
+            x,
+            y,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            alpha: 1.0,
+            rotation: 0.0,
+            resource: Some(rid),
+        };
+        self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// 扫描 save/yskernel_*.json 存档(mtime 新在前;显示 = mtime + file/label)。
+    fn scan_save_entries(&mut self) {
+        self.save_entries.clear();
+        let dir = self.game_dir.join("save");
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let mut paths: Vec<std::path::PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|s| s.to_str())
+                    .map_or(false, |s| s.starts_with("yskernel_") && s.ends_with(".json"))
+            })
+            .collect();
+        paths.sort_by_key(|p| {
+            std::cmp::Reverse(
+                std::fs::metadata(p)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+            )
+        });
+        for p in paths {
+            let stamp = std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| fmt_unix_time(d.as_secs()))
+                .unwrap_or_else(|| "----/--/-- --:--".to_string());
+            let label = std::fs::read(&p)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .map(|d| {
+                    format!(
+                        "{}  {} / {}",
+                        stamp,
+                        d["file"].as_str().unwrap_or("?"),
+                        d["label"].as_str().unwrap_or("?")
+                    )
+                })
+                .unwrap_or_else(|| "(损坏的存档)".to_string());
+            self.save_entries.push((p, label));
+        }
+    }
+
+    /// cg\ev\*.png 清单(剥根规范名;含 update 包同名,LIFO 读取时自动覆盖)。
+    fn list_ev_paths(&self) -> Vec<String> {
+        let mut set: Vec<String> = self
+            .index
+            .keys()
+            .filter_map(|k| {
+                let s = String::from_utf8_lossy(&k[1..]);
+                (s.contains(r"cg\ev\") && s.ends_with(".png")).then(|| s.into_owned())
+            })
+            .collect();
+        set.sort();
+        set.dedup();
+        set
+    }
+
+    /// BGM 曲目名(去 bgm\ 目录与 .ogg;case 保真排序)。
+    fn list_bgm_tracks(&self) -> Vec<String> {
+        let mut set: Vec<String> = self
+            .audio_packs
+            .keys()
+            .filter_map(|k| {
+                let s = String::from_utf8_lossy(&k[1..]);
+                let lower = s.to_ascii_lowercase();
+                (lower.contains(r"bgm\") && lower.ends_with(".ogg")).then(|| {
+                    s.rsplit('\\')
+                        .next()
+                        .unwrap_or("")
+                        .trim_end_matches(".ogg")
+                        .trim_end_matches(".OGG")
+                        .to_string()
+                })
+            })
+            .collect();
+        set.sort_by_key(|t| t.to_ascii_lowercase());
+        set.dedup_by_key(|t| t.to_ascii_lowercase());
+        set
+    }
+
+    /// P3-1:LOAD 存档列表(back_load 整屏 + 存档行 + 戻る)。
+    fn open_load(&mut self) {
+        self.close_subui();
+        self.subui = SubUi::Load;
+        if let Some(rid) = self.load_scenario_image(r"saveload/back_load") {
+            let layer = Layer {
+                id: UI_LOAD_BASE,
+                z: 50,
+                visible: true,
+                x: 0.0,
+                y: 0.0,
+                scale_x: LOGICAL_W / 1920.0,
+                scale_y: LOGICAL_H / 1080.0,
+                alpha: 1.0,
+                rotation: 0.0,
+                resource: Some(rid),
+            };
+            self.bridge.scene_mut().upsert_layer(layer);
+        } else {
+            self.ui_fill(UI_LOAD_BASE, [8, 8, 14, 255], 50);
+        }
+        self.scan_save_entries();
+        // 存档行(最多 8 行;半透明底板 + 白字 + 不可见命中钮)
+        let row_labels: Vec<String> = self
+            .save_entries
+            .iter()
+            .take(8)
+            .map(|(_, l)| l.clone())
+            .collect();
+        for (i, label) in row_labels.iter().enumerate() {
+            let y = 200.0 + i as f32 * 92.0;
+            // 2×1 半透明深色板(拉伸为行底)
+            let px = [16u8, 14, 24, 170, 16, 14, 24, 170];
+            let plate = ResourceId(0x5C_7000_0100 + i as u64);
+            if !self.loaded.contains(&plate.0) {
+                if let Some(b) = self.backend.as_mut() {
+                    let _ = b.load_image_rgba(plate, &px, 2, 1);
+                    self.loaded.insert(plate.0);
+                }
+            }
+            let plate_layer = Layer {
+                id: UI_LOAD_BASE + 0x40 + i as u64,
+                z: 51,
+                visible: true,
+                x: 320.0,
+                y,
+                scale_x: 1280.0,
+                scale_y: 80.0,
+                alpha: 1.0,
+                rotation: 0.0,
+                resource: Some(plate),
+            };
+            self.bridge.scene_mut().upsert_layer(plate_layer);
+            self.ui_text(UI_LOAD_BASE + 0x10 + i as u64, label, 352.0, y + 18.0, 52);
+            self.ui_buttons.push(TitleButton {
+                rect: [320.0, y, 1280.0, 80.0],
+                id: UI_LOAD_BASE + 0x80 + i as u64,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+        }
+        if self.save_entries.is_empty() {
+            self.ui_text(UI_LOAD_BASE + 0x10, "セーブデータがありません", 760.0, 480.0, 52);
+        }
+        self.ui_button(
+            UI_LOAD_BASE + 1,
+            [1660.0, 940.0, 186.0, 87.0],
+            r"saveload/btn_back",
+            ["_off", "_on", "_over"],
+            53,
+        );
+        eprintln!("[scenario] LOAD 画面(存档 {} 件)", self.save_entries.len());
+    }
+
+    /// P3-2:EXTRA 落地菜单(CG/BGM 鉴赏入口 + 戻る)。
+    fn open_extra_menu(&mut self) {
+        self.close_subui();
+        self.subui = SubUi::ExtraMenu;
+        self.ui_fill(UI_EXTRA_BASE, [6, 5, 12, 220], 50);
+        self.ui_text(UI_EXTRA_BASE + 4, "EXTRA", 870.0, 160.0, 51);
+        self.ui_button(
+            UI_EXTRA_BASE + 1,
+            [760.0, 320.0, 400.0, 80.0],
+            r"extra/btn_tab_cgmode",
+            ["", "_on", ""],
+            51,
+        );
+        self.ui_button(
+            UI_EXTRA_BASE + 2,
+            [760.0, 460.0, 400.0, 80.0],
+            r"extra/btn_tab_bgmmode",
+            ["", "_on", ""],
+            51,
+        );
+        self.ui_button(
+            UI_EXTRA_BASE + 3,
+            [870.0, 880.0, 186.0, 87.0],
+            r"saveload/btn_back",
+            ["_off", "_on", "_over"],
+            51,
+        );
+        eprintln!("[scenario] EXTRA 菜单");
+    }
+
+    /// P3-2:CG 鉴赏分页(cg\ev 缩略图 4×3 + 全图查看 + 前/后页 + 戻る)。
+    fn open_extra_cg(&mut self, page: usize) {
+        self.close_subui();
+        self.subui = SubUi::ExtraCg;
+        if self.load_scenario_image(r"extra/cgmode/back").is_none() {
+            self.ui_fill(UI_CG_BASE, [10, 8, 18, 255], 50);
+        }
+        if self.ev_list.is_empty() {
+            self.ev_list = self.list_ev_paths();
+        }
+        const PER: usize = 12;
+        let pages = self.ev_list.len().div_ceil(PER).max(1);
+        let page = page.min(pages - 1);
+        self.cg_page = page;
+        let page_items: Vec<String> = self
+            .ev_list
+            .iter()
+            .skip(page * PER)
+            .take(PER)
+            .cloned()
+            .collect();
+        for (i, path) in page_items.iter().enumerate() {
+            let x = 96.0 + (i % 4) as f32 * 440.0;
+            let y = 150.0 + (i / 4) as f32 * 280.0;
+            self.load_thumb(UI_CG_BASE + 0x10 + i as u64, path, x, y, 420.0, 236.0);
+            self.ui_buttons.push(TitleButton {
+                rect: [x, y, 420.0, 236.0],
+                id: UI_CG_BASE + 0x80 + i as u64,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+        }
+        self.ui_text(
+            UI_CG_BASE + 0x50,
+            &format!("{} / {}  ({} CG)", page + 1, pages, self.ev_list.len()),
+            850.0,
+            1010.0,
+            52,
+        );
+        if page > 0 {
+            self.ui_buttons.push(TitleButton {
+                rect: [100.0, 960.0, 220.0, 90.0],
+                id: UI_CG_BASE + 0x90,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+            self.ui_text(UI_CG_BASE + 0x51, "前", 180.0, 985.0, 52);
+        }
+        if page + 1 < pages {
+            self.ui_buttons.push(TitleButton {
+                rect: [1600.0, 960.0, 220.0, 90.0],
+                id: UI_CG_BASE + 0x91,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+            self.ui_text(UI_CG_BASE + 0x52, "次", 1680.0, 985.0, 52);
+        }
+        self.ui_button(
+            UI_CG_BASE + 1,
+            [1660.0, 30.0, 186.0, 87.0],
+            r"saveload/btn_back",
+            ["_off", "_on", "_over"],
+            53,
+        );
+        eprintln!(
+            "[scenario] CG 鉴赏 {}/{}({} 件)",
+            page + 1,
+            pages,
+            self.ev_list.len()
+        );
+    }
+
+    /// P3-2:BGM 鉴赏(两列曲目点播 + 戻る;戻る停止播放)。
+    fn open_extra_bgm(&mut self) {
+        self.close_subui();
+        self.subui = SubUi::ExtraBgm;
+        if self.load_scenario_image(r"extra/bgmmode/back").is_none() {
+            self.ui_fill(UI_BGM_BASE, [10, 8, 18, 255], 50);
+        }
+        if self.bgm_tracks.is_empty() {
+            self.bgm_tracks = self.list_bgm_tracks();
+        }
+        let tracks: Vec<String> =
+            self.bgm_tracks.iter().take(32).cloned().collect();
+        for (i, t) in tracks.iter().enumerate() {
+            let col = i / 16;
+            let row = i % 16;
+            let x = 220.0 + col as f32 * 800.0;
+            let y = 130.0 + row as f32 * 54.0;
+            self.ui_text(UI_BGM_BASE + 0x10 + i as u64, t, x, y, 52);
+            self.ui_buttons.push(TitleButton {
+                rect: [x - 16.0, y - 10.0, 760.0, 50.0],
+                id: UI_BGM_BASE + 0x80 + i as u64,
+                rids: [None, None, None],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+        }
+        if self.bgm_tracks.is_empty() {
+            self.ui_text(UI_BGM_BASE + 0x10, "BGM なし", 880.0, 480.0, 52);
+        }
+        self.ui_button(
+            UI_BGM_BASE + 1,
+            [1660.0, 940.0, 186.0, 87.0],
+            r"saveload/btn_back",
+            ["_off", "_on", "_over"],
+            53,
+        );
+        eprintln!("[scenario] BGM 鉴赏({} 曲)", self.bgm_tracks.len());
+    }
+
+    /// P3-3:END 确认对话框(dialog_end + yes/no 三态钮)。
+    fn open_confirm_end(&mut self) {
+        self.close_subui();
+        self.subui = SubUi::ConfirmEnd;
+        self.ui_fill(UI_CONFIRM_BASE, [0, 0, 0, 140], 50);
+        if let Some(rid) = self.load_scenario_image(r"confirm/dialog_end") {
+            let layer = Layer {
+                id: UI_CONFIRM_BASE + 1,
+                z: 51,
+                visible: true,
+                x: 694.0,
+                y: 380.0,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                alpha: 1.0,
+                rotation: 0.0,
+                resource: Some(rid),
+            };
+            self.bridge.scene_mut().upsert_layer(layer);
+        }
+        self.ui_button(
+            UI_CONFIRM_BASE + 2,
+            [740.0, 470.0, 146.0, 45.0],
+            r"confirm/btn_yes",
+            ["_off", "_on", "_over"],
+            52,
+        );
+        self.ui_button(
+            UI_CONFIRM_BASE + 3,
+            [1040.0, 470.0, 146.0, 45.0],
+            r"confirm/btn_no",
+            ["_off", "_on", "_over"],
+            52,
+        );
+        eprintln!("[scenario] END 确认对话框");
+    }
+
+    /// 子画面点击路由(每帧至多一次;返回恒 None —— scenario 保持标题等待)。
+    fn poll_subui(&mut self) {
+        if !self.frame_clicked {
+            return;
+        }
+        let (cx, cy) = self.cursor_logical;
+        let hit = self.ui_buttons.iter().find(|b| {
+            b.active
+                && cx >= b.rect[0] as i64
+                && cx < (b.rect[0] + b.rect[2]) as i64
+                && cy >= b.rect[1] as i64
+                && cy < (b.rect[1] + b.rect[3]) as i64
+        });
+        let Some(id) = hit.map(|b| b.id) else {
+            return;
+        };
+        match self.subui {
+            SubUi::Load => {
+                if id == UI_LOAD_BASE + 1 {
+                    self.play_sysse(TITLE_SE_CANCEL);
+                    self.close_subui();
+                } else if id >= UI_LOAD_BASE + 0x80 {
+                    let i = (id - UI_LOAD_BASE - 0x80) as usize;
+                    if let Some((path, _)) = self.save_entries.get(i) {
+                        let path = path.clone();
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        self.request_load_path = Some(path);
+                        self.request_title_load = true;
+                    }
+                }
+            }
+            SubUi::ExtraMenu => match id {
+                UI_EXTRA_CG_TAB => {
+                    self.play_sysse(TITLE_SE_DECIDE);
+                    self.open_extra_cg(0);
+                }
+                UI_EXTRA_BGM_TAB => {
+                    self.play_sysse(TITLE_SE_DECIDE);
+                    self.open_extra_bgm();
+                }
+                UI_EXTRA_BACK => {
+                    self.play_sysse(TITLE_SE_CANCEL);
+                    self.close_subui();
+                }
+                _ => {}
+            },
+            SubUi::ExtraCg => {
+                // 全图查看:任意点击返回分页
+                if self.cg_view.take().is_some() {
+                    let scene = self.bridge.scene_mut();
+                    scene.hide_layer(UI_CG_BASE + 0x60);
+                    scene.hide_layer(UI_CG_BASE + 0x61);
+                    return;
+                }
+                match id {
+                    UI_CG_PREV => {
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        self.open_extra_cg(self.cg_page.saturating_sub(1));
+                    }
+                    UI_CG_NEXT => {
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        self.open_extra_cg(self.cg_page + 1);
+                    }
+                    UI_CG_BACK => {
+                        self.play_sysse(TITLE_SE_CANCEL);
+                        self.open_extra_menu();
+                    }
+                    id if (UI_CG_BASE + 0x80..UI_CG_BASE + 0x90).contains(&id) => {
+                        let i = (id - UI_CG_BASE - 0x80) as usize;
+                        const PER: usize = 12;
+                        if let Some(path) = self.ev_list.get(self.cg_page * PER + i) {
+                            let path = path.clone();
+                            self.play_sysse(TITLE_SE_DECIDE);
+                            self.show_cg_full(&path);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            SubUi::ExtraBgm => {
+                if id == UI_BGM_BASE + 1 {
+                    self.audio.stop_bgm();
+                    self.play_sysse(TITLE_SE_CANCEL);
+                    self.open_extra_menu();
+                } else if id >= UI_BGM_BASE + 0x80 {
+                    let i = (id - UI_BGM_BASE - 0x80) as usize;
+                    if let Some(t) = self.bgm_tracks.get(i) {
+                        let t = t.clone();
+                        self.play_sysse(TITLE_SE_DECIDE);
+                        match self.resolve_audio(&self.audio_packs, "", &t) {
+                            Some(data) => self.audio.play_bgm(&t, data, None),
+                            None => eprintln!("[audio] bgm 未命中: {t}"),
+                        }
+                    }
+                }
+            }
+            SubUi::ConfirmEnd => {
+                if id == UI_CONFIRM_BASE + 2 {
+                    self.play_sysse(TITLE_SE_DECIDE);
+                    self.request_quit = true; // はい:主循环 event_loop.exit()
+                } else if id == UI_CONFIRM_BASE + 3 {
+                    self.play_sysse(TITLE_SE_CANCEL);
+                    self.close_subui();
+                }
+            }
+            SubUi::None => {}
+        }
+    }
+
+    /// CG 全图查看(ev 原图整屏;点击由 poll_subui 关闭)。
+    fn show_cg_full(&mut self, path: &str) {
+        let Some(rid) = self.load_scenario_image(path) else {
+            eprintln!("[scenario] CG 全图未命中: {path}");
+            return;
+        };
+        let (iw, ih) = self
+            .backend
+            .as_ref()
+            .and_then(|b| b.image_size(rid.0))
+            .unwrap_or((1920, 1080));
+        let layer = Layer {
+            id: UI_CG_BASE + 0x60,
+            z: 60,
+            visible: true,
+            x: 0.0,
+            y: 0.0,
+            scale_x: LOGICAL_W / iw as f32,
+            scale_y: LOGICAL_H / ih as f32,
+            alpha: 1.0,
+            rotation: 0.0,
+            resource: Some(rid),
+        };
+        self.bridge.scene_mut().upsert_layer(layer);
+        self.ui_text(UI_CG_BASE + 0x61, "クリックで戻る", 830.0, 1020.0, 61);
+        self.cg_view = Some(rid);
+    }
+
 
     /// 渲染台词窗底框(txspace 纹理 + 半透明底)到场景(z=80)。
     fn show_window_frame(&mut self) {
@@ -948,6 +1693,11 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn poll_title_menu(&mut self) -> Option<TitleMenuAction> {
+        // P3 子画面打开中:点击全部由子画面消费,scenario 保持标题等待。
+        if self.subui != SubUi::None {
+            self.poll_subui();
+            return None;
+        }
         if !self.frame_clicked {
             return None;
         }
@@ -980,17 +1730,19 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn title_load(&mut self) {
-        // LOAD/LASTLOAD 屏未实现(P0):两钮暂同走快读恢复(引擎 LASTLOAD = 最近存档);
-        // quick_load 需 &mut Player(scenario 分裂借用),此处仅置请求,Player::tick 消费
-        self.request_title_load = true;
+        // P3-1(成果 81):LOAD 存档列表画面(选中槽位经 request_load_path,
+        // Player::tick 消费走 restore_from;读档完成 start() 重置等待)。
+        self.open_load();
     }
 
     fn title_extra(&mut self) {
-        eprintln!("[scenario] EXTRA 未实现(留在标题)");
+        // P3-2(成果 81):EXTRA 落地菜单(CG/BGM 鉴赏 + 戻る)。
+        self.open_extra_menu();
     }
 
     fn request_quit(&mut self) {
-        self.request_quit = true;
+        // P3-3(成果 81):END → 确认对话框(はい 才置 request_quit 真退出)。
+        self.open_confirm_end();
     }
 }
 
@@ -1025,13 +1777,20 @@ impl Player {
         core.update_sprite_fades();
         let clicked = std::mem::take(&mut core.clicked);
         self.scenario.tick(core, clicked);
-        core.update_title_buttons(); // 标题按钮三态(悬停/按下帧;成果 78)
-        // 标题 LOAD/LASTLOAD:tick 内置请求,此处消费(scenario 已在快读中被 start() 重置)
+        if core.subui == SubUi::None {
+            core.update_title_buttons(); // 标题按钮三态(悬停/按下帧;成果 78)
+        } else {
+            core.update_ui_buttons(); // 子画面按钮三态(成果 81)
+        }
+        // 标题 LOAD:tick 内置请求,此处消费(scenario 已在快读中被 start() 重置)
         if core.request_title_load {
             core.request_title_load = false;
             core.frame_clicked = false; // 防快读后首帧被同一次点击推进
+            let path = core.request_load_path.take().unwrap_or_else(|| {
+                core.game_dir.join("save").join("yskernel_qsave.json")
+            });
             drop(core);
-            self.quick_load();
+            self.restore_from(&path);
             return;
         }
         if core.key_pulse {
@@ -1078,8 +1837,12 @@ impl Player {
     }
 
     pub fn quick_load(&mut self) {
-        let path = self.game_dir.join("save").join("yskernel_qsave.json");
-        let Ok(bytes) = std::fs::read(&path) else {
+        self.restore_from(&self.game_dir.join("save").join("yskernel_qsave.json"));
+    }
+
+    /// 从指定存档 JSON 恢复(F9 快读与 LOAD 画面槽位共用;成果 81)。
+    pub fn restore_from(&mut self, path: &std::path::Path) {
+        let Ok(bytes) = std::fs::read(path) else {
             eprintln!("[load] 无快存");
             return;
         };
@@ -1099,6 +1862,7 @@ impl Player {
                 }
             }
         }
+        self.core.close_subui(); // 从 LOAD 画面读档 → 关闭子画面(成果 81)
         let scene = self.core.bridge.scene_mut();
         for id in self.core.sprites.drain(..) {
             scene.hide_layer(id);
@@ -1116,6 +1880,7 @@ impl Player {
 impl PlayerCore {
     /// 标题层清理(reset 与进入对话时)。
     fn reset_title_layers(&mut self) {
+        self.close_subui(); // 子画面(LOAD/EXTRA/确认框)一并复位(成果 81)
         let scene = self.bridge.scene_mut();
         for i in 0..12u64 {
             scene.hide_layer(0x5C_7000_0000 + i);
@@ -1220,6 +1985,14 @@ mod title_se_tests {
             request_title_load: false,
             request_quit: false,
             globals: HashMap::new(),
+            subui: SubUi::None,
+            ui_buttons: Vec::new(),
+            save_entries: Vec::new(),
+            request_load_path: None,
+            ev_list: Vec::new(),
+            cg_page: 0,
+            cg_view: None,
+            bgm_tracks: Vec::new(),
             game_dir: std::path::PathBuf::new(),
         }
     }
@@ -1271,5 +2044,182 @@ mod title_se_tests {
         core.frame_clicked = true;
         assert_eq!(core.poll_title_menu(), None); // 点击无效
         assert!(core.audio.se_log.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod subui_tests {
+    //! P3 回归(成果 81):END 确认流 / LOAD 槽位选择 / EXTRA 导航。
+    //! 空索引 + 无 backend:层不落,状态机与命中区断言照常成立。
+
+    use super::*;
+
+    fn make_core() -> PlayerCore {
+        let bytes = load_cjk_font().expect("no cjk font");
+        let font = fontdue::Font::from_bytes(
+            bytes,
+            fontdue::FontSettings { collection_index: 0, scale: 40.0, load_substitutions: true },
+        )
+        .unwrap();
+        PlayerCore {
+            index: Arc::new(PacFileIndex::default()),
+            vm: minimal_vm(),
+            bridge: SceneBridge::new(),
+            loaded: HashSet::new(),
+            backend: None,
+            events_cursor: 0,
+            wait_frames: 0,
+            wait_until: None,
+            cursor_logical: (0, 0),
+            key_pulse: false,
+            key_pulse_frames: 0,
+            font,
+            fade: None,
+            clicked: false,
+            sprites: Vec::new(),
+            sprite_fades: Vec::new(),
+            audio_packs: Arc::new(PacFileIndex::default()),
+            audio: crate::audio::Audio::new(),
+            choices: None,
+            last_cursor_px: None,
+            frame_clicked: false,
+            title_buttons: Vec::new(),
+            request_title_load: false,
+            request_quit: false,
+            globals: HashMap::new(),
+            subui: SubUi::None,
+            ui_buttons: Vec::new(),
+            save_entries: Vec::new(),
+            request_load_path: None,
+            ev_list: Vec::new(),
+            cg_page: 0,
+            cg_view: None,
+            bgm_tracks: Vec::new(),
+            game_dir: std::path::PathBuf::new(),
+        }
+    }
+
+    /// 复用 title_se_tests 的最小 VM 构造(同名逻辑独立成此处夹具)。
+    fn minimal_vm() -> GroupVm {
+        fn xor(r: &[u8], key: [u8; 4]) -> Vec<u8> {
+            r.iter().enumerate().map(|(i, b)| b ^ key[i % 4]).collect()
+        }
+        let key = [0x2b, 0x90, 0x4f, 0x93];
+        let part1 = xor(&[0u8, 0, 0, 0], key);
+        let p4 = xor(&[0u8; 4], key);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"YSTB");
+        out.extend_from_slice(&555u32.to_le_bytes());
+        out.extend_from_slice(&1u32.to_le_bytes());
+        out.extend_from_slice(&(part1.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&(p4.len() as u32).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&part1);
+        out.extend_from_slice(&p4);
+        GroupVm::load(yuris_format::ystb::YstbFile::from_bytes(&out, key).expect("ystb"))
+            .expect("vm")
+    }
+
+    fn temp_game_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("yuris_p3_{}_{}", tag, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("save")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn end_confirm_yes_quits_no_stays() {
+        let mut core = make_core();
+        core.title_buttons.push(TitleButton {
+            rect: [100.0, 100.0, 50.0, 50.0],
+            id: 0x5C_7000_0009, // END
+            rids: [None, None, None],
+            shown: TITLE_BTN_OFF,
+            hovered: false,
+            active: true,
+        });
+        core.cursor_logical = (110, 110);
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), Some(TitleMenuAction::End));
+        core.request_quit(); // scenario 路由:END → 确认对话框
+        assert_eq!(core.subui, SubUi::ConfirmEnd);
+        assert!(!core.request_quit, "确认前不得置退出请求");
+        // いいえ → 留在标题
+        core.cursor_logical = (1100, 490); // btn_no(1040,470,146,45)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::None);
+        assert!(!core.request_quit);
+        assert_eq!(core.audio.se_log.last().map(String::as_str), Some("sse06"));
+        // 再走一遍 → はい → 退出请求
+        core.request_quit();
+        core.cursor_logical = (810, 490); // btn_yes(740,470,146,45)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert!(core.request_quit);
+    }
+
+    #[test]
+    fn load_screen_slot_click_requests_restore() {
+        let dir = temp_game_dir("load");
+        std::fs::write(
+            dir.join("save").join("yskernel_qsave.json"),
+            r#"{"file":"maho2_01.txt","label":"m1","globals":[0]}"#,
+        )
+        .unwrap();
+        let mut core = make_core();
+        core.game_dir = dir.clone();
+        core.open_load();
+        assert_eq!(core.subui, SubUi::Load);
+        assert_eq!(core.save_entries.len(), 1);
+        // 戻る → 回标题
+        core.cursor_logical = (1700, 960); // btn_back(1660,940,186,87)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::None);
+        // 重开 → 点槽位 0 → 读档请求
+        core.open_load();
+        core.cursor_logical = (400, 240); // 槽 0(320,200,1280,80)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert!(core.request_title_load);
+        assert_eq!(
+            core.request_load_path.as_deref(),
+            Some(dir.join("save").join("yskernel_qsave.json").as_path())
+        );
+        assert_eq!(core.audio.se_log.last().map(String::as_str), Some("sse03"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn extra_menu_nav_and_back() {
+        let mut core = make_core();
+        core.open_extra_menu();
+        assert_eq!(core.subui, SubUi::ExtraMenu);
+        // CG 标签页
+        core.cursor_logical = (800, 360); // cg tab(760,320,400,80)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::ExtraCg);
+        // CG 画面戻る → 落地菜单
+        core.cursor_logical = (1700, 60); // cg back(1660,30,186,87)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::ExtraMenu);
+        // BGM 标签页 → 戻る → 落地菜单 → 戻る → 标题
+        core.cursor_logical = (800, 500); // bgm tab(760,460,400,80)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::ExtraBgm);
+        core.cursor_logical = (1700, 960); // bgm back(1660,940,186,87)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::ExtraMenu);
+        core.cursor_logical = (900, 920); // landing back(870,880,186,87)
+        core.frame_clicked = true;
+        assert_eq!(core.poll_title_menu(), None);
+        assert_eq!(core.subui, SubUi::None);
     }
 }
