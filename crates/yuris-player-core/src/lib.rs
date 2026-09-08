@@ -26,7 +26,7 @@ use yuris_vm::{GroupVm, VmSuspend};
 pub mod audio;
 pub mod scenario;
 
-pub use scenario::{ScenarioHost, ScenarioPlayer};
+pub use scenario::{ScenarioHost, ScenarioPlayer, TitleMenuAction};
 
 /// 按平台候选路径加载 CJK 字体(繁中优先,其次简中/日文)。
 pub fn load_cjk_font() -> Option<Vec<u8>> {
@@ -112,6 +112,12 @@ pub struct PlayerCore {
     /// 最近 CursorMoved 原始像素(winit 0.30 无 cursor_position 轮询)。
     pub last_cursor_px: Option<(f64, f64)>,
     pub frame_clicked: bool,
+    /// 标题按钮命中区(rect = x,y,w,h 逻辑坐标;id = 按钮层 id)。
+    pub title_buttons: Vec<([f32; 4], u64)>,
+    /// 标题 LOAD/LASTLOAD 请求(tick 内置,Player::tick 消费走快读)。
+    pub request_title_load: bool,
+    /// 标题 END 请求(主循环消费后退出)。
+    pub request_quit: bool,
     #[allow(dead_code)]
     pub game_dir: std::path::PathBuf,
 }
@@ -671,6 +677,11 @@ impl ScenarioHost for PlayerCore {
             } else {
                 (1.0, 1.0)
             };
+            if !fullscreen {
+                // 按钮命中区(成果 76):原生尺寸,左上角 (x,y)
+                self.title_buttons
+                    .push(([x as f32, y as f32, iw as f32, ih as f32], id));
+            }
             let layer = Layer {
                 id,
                 z: 1,
@@ -686,7 +697,7 @@ impl ScenarioHost for PlayerCore {
             let scene = self.bridge.scene_mut();
             scene.upsert_layer(layer);
         }
-        eprintln!("[scenario] 标题画面(eyecatch 分层组合;点击开始)");
+        eprintln!("[scenario] 标题画面(eyecatch 分层组合;按钮菜单:START/LOAD/LASTLOAD/EXTRA/END)");
     }
 
     fn poll_choice(&mut self, count: usize) -> Option<usize> {
@@ -791,6 +802,47 @@ impl ScenarioHost for PlayerCore {
     fn log(&mut self, msg: &str) {
         eprintln!("[scenario] {msg}");
     }
+
+    fn poll_title_menu(&mut self) -> Option<TitleMenuAction> {
+        if !self.frame_clicked {
+            return None;
+        }
+        let (cx, cy) = self.cursor_logical;
+        for (rect, id) in &self.title_buttons {
+            let [x, y, w, h] = *rect;
+            if cx >= x as i64
+                && cx < (x + w) as i64
+                && cy >= y as i64
+                && cy < (y + h) as i64
+            {
+                let act = match *id {
+                    0x5C_7000_0005 => TitleMenuAction::Start,
+                    0x5C_7000_0006 => TitleMenuAction::Load,
+                    0x5C_7000_0007 => TitleMenuAction::LastLoad,
+                    0x5C_7000_0008 => TitleMenuAction::Extra,
+                    0x5C_7000_0009 => TitleMenuAction::End,
+                    _ => continue,
+                };
+                eprintln!("[scenario] 标题按钮 id={id:#x} → {act:?}");
+                return Some(act);
+            }
+        }
+        None
+    }
+
+    fn title_load(&mut self) {
+        // LOAD/LASTLOAD 屏未实现(P0):两钮暂同走快读恢复(引擎 LASTLOAD = 最近存档);
+        // quick_load 需 &mut Player(scenario 分裂借用),此处仅置请求,Player::tick 消费
+        self.request_title_load = true;
+    }
+
+    fn title_extra(&mut self) {
+        eprintln!("[scenario] EXTRA 未实现(留在标题)");
+    }
+
+    fn request_quit(&mut self) {
+        self.request_quit = true;
+    }
 }
 
 pub struct Player {
@@ -824,6 +876,14 @@ impl Player {
         core.update_sprite_fades();
         let clicked = std::mem::take(&mut core.clicked);
         self.scenario.tick(core, clicked);
+        // 标题 LOAD/LASTLOAD:tick 内置请求,此处消费(scenario 已在快读中被 start() 重置)
+        if core.request_title_load {
+            core.request_title_load = false;
+            core.frame_clicked = false; // 防快读后首帧被同一次点击推进
+            drop(core);
+            self.quick_load();
+            return;
+        }
         if core.key_pulse {
             core.key_pulse_frames += 1;
             if core.key_pulse_frames > 120 {

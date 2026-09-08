@@ -137,6 +137,9 @@ fn main() {
         choices: None,
         last_cursor_px: None,
         frame_clicked: false,
+        title_buttons: Vec::new(),
+        request_title_load: false,
+        request_quit: false,
         game_dir: game_dir.clone(),
     };
     let mut player = Player {
@@ -301,6 +304,10 @@ impl winit::application::ApplicationHandler for AppWrapper {
             }
             winit::event::WindowEvent::RedrawRequested => {
                 player.tick();
+                if player.core.request_quit {
+                    event_loop.exit();
+                    return;
+                }
                 if let Some(b) = player.core.backend.as_mut() {
                     if let Err(e) = b.render(player.core.bridge.scene()) {
                         eprintln!("渲染失败: {e}");

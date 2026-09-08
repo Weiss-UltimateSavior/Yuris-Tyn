@@ -1212,6 +1212,7 @@ LAB\_00453178/LAB\_004550a0 来自 FUN\_0046305c 命令表,下标换算 slot=ind
 | 资源      | cgsys_ec.ypf 名字首字节(0x10~0x3B)       | Unknown                                | 盘上名字自带,非解析漂移/非名字哈希;可打印时即「前导杂字节」;查找由剥根双索引免疫(成果 74)               |
 | 资源      | config 系 UI 按钮 btn_all_mask/btn_c01~16/other/* 真缺失 | **Confirmed(字节级)**                | 12 包 XOR-0xC9 检索不存在;引擎同表现空按钮,非分歧(成果 74)                          |
 | 资源      | 剩余 151 条失败根因 = 产品未打包可选素材             | **Confirmed(算术闭合)/Likely(引擎同执行)**   | 97 路径↔s250~s254 字面量逐组钉死,失败次数==字面量数(40+6+32+67+6=151);config 仅 sound/system/text 三页,通用钮替代 per-channel 钮;引擎未找到=设计路径(成果 75) |
+| UI        | 标题按钮盲推进(点任意按钮都进游戏) → 已路由         | **Confirmed(命中路由)/Likely(START 落入)**   | 根因 = `\TITLE`+Wait::Line 盲推进,按钮纯贴图;Wait::TitleMenu+poll_title_menu 五按钮命中路由,END 实测 exit 0,LOAD 失败不落穿(成果 76) |
 | Runtime | 免封包优先级                                | **Confirmed（机制）**                      | YSCM 含 `FILEPRIORITY*` 键                                                     |
 | 资源      | 图片格式                                  | **Likely**                             | YSCM 含 `BMP PNG JPG GIF AVI PSB WEBP`                                        |
 | 资源      | 音频格式                                  | **Likely**                             | YSCM 含 `WAV OGG`                                                             |
@@ -3209,6 +3210,49 @@ player 每次未命中打一行日志(引擎静默),如需可降为 debug 级/
   tip_mes_preview 归入同类)。
 - 成果 73/74 的后续:VARACT hex 取证中的 `sound_3/btn_01` 拼串、
   `_N` 剥离后残余,均在本成果收口。
+
+***
+
+## 2026-09-08 标题菜单点击路由(成果 76)
+
+### 成果 76:标题按钮按功能路由(START/LOAD/LASTLOAD/EXTRA/END) —— **Confirmed(命中路由)/Likely(START 落入开场)**
+
+**现象**(用户报告):标题界面无论点哪个按钮都进入游戏。
+
+**根因**(Confirmed,代码链路):
+- VM 层无 click 通道(全 crate 检索 0 命中);点击仅被 scenario 驱动消费。
+- `\TITLE` 处理为 `title_screen()`(内置硬编码标题,5 个按钮为纯贴图)
+  + `Wait::Line` 盲推进 → **任意点击**(含按钮/背景)清等待 → scenario
+  继续执行后续行 → 进游戏开场。按钮从未参与命中判定。
+
+**修复**:
+- `Wait` 新增 `TitleMenu` 变体;`\TITLE` 绑定之(点背景不推进,对齐
+  引擎原生菜单语义)。
+- `ScenarioHost` 新增 4 默认方法:`poll_title_menu`(命中→
+  `TitleMenuAction{Start,Load,LastLoad,Extra,End}`)/`title_load`/
+  `title_extra`/`request_quit`;测试桩零改动。
+- `title_screen()` 按钮层(id 0x5C_7000_0005..9)原生尺寸记录命中区
+  `title_buttons`;`reset_title_layers()` 同步清空。
+- 路由:START → 清等待落入执行循环(开场);LOAD/LASTLOAD →
+  `request_title_load` 请求,`Player::tick` 消费走 `quick_load()`
+  (scenario/core 分裂借用所致;成功 → `start()` 重置等待,失败(无快存)
+  → **保持标题等待不落穿**);EXTRA → 日志「未实现」留在标题;
+  END → `request_quit`,主循环 `event_loop.exit()`。
+- 防落穿双保险:LOAD 失败不预清 wait;快读消费帧清 `frame_clicked`
+  (防同一次点击推进快读后首行)。
+
+**实机验证**(40 秒窗口,用户实际点击):
+- Load(0x06)×3、LastLoad(0x07)×4 → 「无快存」→ 留在标题 ✓
+- Extra(0x08) → 「未实现」留在标题 ✓
+- **End(0x09) → 进程 exit 0 干净退出** ✓
+- 背景点击 ×2 → 无按钮日志、无推进(正确忽略)✓
+- 不同按钮命中不同 id,矩形判定准确 ✓
+- START 落入开场路径未实测(本次未点击);同一 poll 机制,仅差
+  wait 清空 → **Likely**。
+- VARACT 0 条,无回归。
+
+**遗留**(不在本成果范围):LOAD 存档槽列表屏(引擎 cgsys/load/* 原生
+UI)、按钮悬停 _off/_on 换图、EXTRA 鉴赏菜单。
 
 ***
 

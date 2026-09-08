@@ -42,8 +42,18 @@ pub trait ScenarioHost {
     fn play_bgm(&mut self, name: &str, volume_permille: Option<i64>);
     /// SE。
     fn play_se(&mut self, name: &str);
-    /// 内置标题画面(显示 + 等待点击)。
+    /// 内置标题画面(显示 + 等待菜单点击)。
     fn title_screen(&mut self);
+    /// 标题菜单轮询:返回点中的按钮动作(未点/未命中 = None;点背景不推进)。
+    fn poll_title_menu(&mut self) -> Option<TitleMenuAction> {
+        None
+    }
+    /// 标题 LOAD/LASTLOAD:恢复存档(实现方走快读;完成后 scenario 已被重置)。
+    fn title_load(&mut self) {}
+    /// 标题 EXTRA:未实现时实现方留日志,留在标题。
+    fn title_extra(&mut self) {}
+    /// 标题 END:请求退出播放器。
+    fn request_quit(&mut self) {}
     /// 选择肢轮询:count = 选项数;返回被点中的下标(未点 = None)。
     fn poll_choice(&mut self, count: usize) -> Option<usize>;
     /// 显示选择肢按钮。
@@ -58,6 +68,21 @@ pub trait ScenarioHost {
     fn log(&mut self, msg: &str);
 }
 
+/// 标题菜单按钮动作(引擎原生菜单的内置等价路由;成果 76)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleMenuAction {
+    /// START:开始新游戏(推进 scenario)。
+    Start,
+    /// LOAD:读档界面(内置暂走快读)。
+    Load,
+    /// LASTLOAD:读最近存档(快读)。
+    LastLoad,
+    /// EXTRA:鉴赏/附录(未实现)。
+    Extra,
+    /// END:退出。
+    End,
+}
+
 /// 运行器等待状态。
 #[derive(Debug, Clone)]
 enum Wait {
@@ -69,6 +94,8 @@ enum Wait {
     Fading { until: Instant },
     /// 选择肢:等玩家点选(poll_choice)。
     Choices,
+    /// 标题菜单:等按钮命中(poll_title_menu;点背景不推进,成果 76)。
+    TitleMenu,
 }
 
 /// 跨文件标签表:标签名 → (文件名, 元素下标)。
@@ -205,6 +232,26 @@ impl ScenarioPlayer {
         if self.done {
             return;
         }
+        // 标题菜单:按钮命中才路由,点背景不推进(引擎语义,成果 76)。
+        if matches!(&self.wait, Some(Wait::TitleMenu)) {
+            match host.poll_title_menu() {
+                None => return,
+                Some(TitleMenuAction::Start) => self.wait = None, // 落入执行循环 → 开场
+                Some(TitleMenuAction::Load | TitleMenuAction::LastLoad) => {
+                    // 不预清 wait:读档成功 → start() 重置 wait;失败(无快存)→ 保持标题等待
+                    host.title_load();
+                    return;
+                }
+                Some(TitleMenuAction::Extra) => {
+                    host.title_extra(); // 未实现:留日志,留在标题
+                    return;
+                }
+                Some(TitleMenuAction::End) => {
+                    host.request_quit();
+                    return;
+                }
+            }
+        }
         // 等待检查
         if let Some(w) = &self.wait {
             if matches!(w, Wait::Choices) {
@@ -229,6 +276,7 @@ impl ScenarioPlayer {
                 Wait::Timed { until, .. } | Wait::Fading { until } => Instant::now() >= *until,
                 Wait::Line => false,
                 Wait::Choices => false, // 已在上方处理(不可达;穷尽性)
+                Wait::TitleMenu => false, // 已在上方处理(不可达;穷尽性)
             };
             if !expired && !clicked {
                 return;
@@ -391,9 +439,10 @@ impl ScenarioPlayer {
                 false
             }
             "TITLE" => {
-                // \TITLE:内置标题画面(显示 + 等待点击;引擎菜单为原生 UI)
+                // \TITLE:内置标题画面 + 菜单等待(按钮命中路由,成果 76;
+                // 旧行为 Wait::Line 盲推进 = 「点任意按钮都进游戏」根因)
                 host.title_screen();
-                self.wait = Some(Wait::Line);
+                self.wait = Some(Wait::TitleMenu);
                 true
             }
             "SEL" if modifiers.iter().any(|m| m == "GO") => {
