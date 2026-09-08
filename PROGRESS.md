@@ -3256,6 +3256,41 @@ UI)、按钮悬停 _off/_on 换图、EXTRA 鉴赏菜单。
 
 ***
 
+## 2026-09-08 标题按钮机制取证与问题计划(成果 77)
+
+### 成果 77:`\TITLE` 经 G1 传递按钮选择;按钮三态素材实证;问题计划成文 —— **Confirmed(剧本流/素材态)/Unknown(sse 映射)**
+
+**取证**(工具:`/tmp/dump_sc.py` 剧本转储、`crates/yuris-vm/examples/tmp_extract.rs`
+播放器同路径提取素材):
+
+1. **剧本流**(sc.ypf `scenario\scenario_start.txt #SCENARIO_TITLE`):
+   `\TITLE` → `\GO.G.IF(1,"==",1, SCENARIO_MAIN)` → `\GO.G.IF(1,"==",2, ARA)`
+   → 兜底 `\GO(SCENARIO_MAIN)`。按钮选择写入**全局变量 G1**
+   (1=START→maho2_01 开场;2=OUTLINE/あらすじ→ara.txt 前情回顾);
+   **未写 G1 的任何路径经兜底必进开场** —— 成果 76 前旧实现
+   (`Wait::Line` 不写 G1)"点哪个都进游戏"的机制根因。
+2. **按钮素材三态 + 不可用态**(cgsys_ec.ypf 实存,已提取目验):
+   `_off`=常态(粉底紫字)/`_on`=高亮(金字星光)/`_over`=按下(近 _on)/
+   `_na`=灰化不可用(CONTINUE;lastload/extra 有)。按钮全集 9 个:
+   start/load/lastload/arasuji/extra/end/config/manual/web。
+3. **音效面**:sysse.ypf 实存 `sse01~06.ogg` 6 个系统音效;播放器标题
+   流程无任何 `play_se` 调用(代码检索实证);sse 语义映射 Unknown。
+4. **当前实现差距**:默认绘制 `_on` 高亮态(原生应默认 `_off`);无
+   悬停/按下/灰化切换;无 OUTLINE 按钮(剧本已支持 G1==2);Start 依赖
+   兜底路径未写 G1;`btn_confirm_title_bt4` 提示 END 可能有确认对话框
+   (Hypothesis)。
+
+**验证方式**:
+- `python3 /tmp/dump_sc.py start.txt` 复现剧本原文;
+- `cargo run -p yuris-vm --example tmp_extract -- <游戏目录> /tmp/title_btn`
+  复现素材提取与目验;
+- `grep -n play_se crates/yuris-player-core/src/lib.rs` 确认标题流程无 SE。
+
+**产出**:`docs/title-menu-plan.md`(差距清单 G1~G7 + 行动计划
+P1 保真度核心/P2 反馈层/P3 功能补全)。
+
+***
+
 ## 更新约定
 
 每次更新本文件时：
