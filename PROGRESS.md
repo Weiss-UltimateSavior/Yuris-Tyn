@@ -1211,6 +1211,7 @@ LAB\_00453178/LAB\_004550a0 来自 FUN\_0046305c 命令表,下标换算 slot=ind
 | 资源      | UI 素材 `_N` 变体剥离回退                   | **Likely(对拍)**                        | 系统剧本字面量 `sound_2/tip_cgauge` 等 ↔ 包内 `sound\tip_cgauge.png` 剥 `_N` 6+ 例全中;resolve_entry 已落地(成果 74) |
 | 资源      | cgsys_ec.ypf 名字首字节(0x10~0x3B)       | Unknown                                | 盘上名字自带,非解析漂移/非名字哈希;可打印时即「前导杂字节」;查找由剥根双索引免疫(成果 74)               |
 | 资源      | config 系 UI 按钮 btn_all_mask/btn_c01~16/other/* 真缺失 | **Confirmed(字节级)**                | 12 包 XOR-0xC9 检索不存在;引擎同表现空按钮,非分歧(成果 74)                          |
+| 资源      | 剩余 151 条失败根因 = 产品未打包可选素材             | **Confirmed(算术闭合)/Likely(引擎同执行)**   | 97 路径↔s250~s254 字面量逐组钉死,失败次数==字面量数(40+6+32+67+6=151);config 仅 sound/system/text 三页,通用钮替代 per-channel 钮;引擎未找到=设计路径(成果 75) |
 | Runtime | 免封包优先级                                | **Confirmed（机制）**                      | YSCM 含 `FILEPRIORITY*` 键                                                     |
 | 资源      | 图片格式                                  | **Likely**                             | YSCM 含 `BMP PNG JPG GIF AVI PSB WEBP`                                        |
 | 资源      | 音频格式                                  | **Likely**                             | YSCM 含 `WAV OGG`                                                             |
@@ -3113,6 +3114,83 @@ VM 越过 s190 pc=36(成果 73)后,系统 UI 链复活的素材请求全面暴�
 - 结论汇总表:资源层新增 `_N` 变体剥离行(Likely)、
   cgsys_ec 名字首字节行(Unknown)。
 - 临时探针 tmp_probe_roots/rootbyte/rawidx/crc/nonpng 用毕已删。
+
+***
+
+## 2026-09-08 UI 素材路径破案(二) — 剩余 151 条根因全景:剧本字面量↔失败计数算术闭合 + 引擎原生容错锚定(成果 75)
+
+### 成果 75:剩余 151 条 CG 解析失败 = 产品未打包的可选 UI 素材,引擎原生容错 —— **Confirmed(算术闭合)/Likely(引擎同执行)/Unknown(加载时机)**
+
+成果 74 消解可解族后剩余 151 条(97 唯一路径)。本轮回答遗留的
+「为什么剧本会请求不存在的文件」。
+
+#### 1. 逐组来源与算术闭合 —— **Confirmed**(剧本原文 ↔ 失败计数)
+
+全剧本扫描(bn.ypf 全部 yst*.ybn 字节级检索)把 97 个失败路径全部钉到
+5 个系统 UI 剧本的 `es.BT.CG.SET`/`es.BT.MAP.CG.SET` 字面量,且
+**失败发生次数 == 剧本字面量个数**(全部定义点无条件执行):
+
+| 剧本 | 页面 | 失败路径族 | 条数 |
+| --- | --- | --- | --- |
+| s251 | config「other」页 | other/btn_show_bt4×18、btn_check_bt4×16、btn_allon/alloff_bt3×2、btn_tab_other_on×2、back_other×2 | 40 |
+| s252 | config「sound」页 | sound/btn_c07~09_bt4×3、btn_all_mask×3 | 6 |
+| s253 | config「sound_2」页 | sound_2/btn_c01~16_bt4×16、btn_all_mask×16 | 32 |
+| s254 | config「sound_3」页(音声作品页) | sound_3/btn_01~65〈日文商品名〉_bt4×65、btn_allon/alloff_bt3×2 | 67 |
+| s250 | config「text」页 | text/tip_mes_preview_1/2/3×2(字面量 4 处,`_4` 实存) | 6 |
+| **合计** | | | **151**(与日志实测精确一致) |
+
+#### 2. 结构发现:包内是「通用钮替代 per-channel 钮」的素材裁剪 —— **Confirmed**
+
+- s253 每声道定义**两个按钮角色**:`es.BT.SET "VOL.CHARA.GAUGE"` →
+  `btn_cslider_bt3`(**包内实存**)与 `es.BT.SET "VOL.CHARA.MUTE.ON"` →
+  `btn_cNN_bt4` + `es.BT.MAP.CG.SET btn_all_mask`(**包内无**)。不是
+  同钮双皮肤重定义,是不同按钮角色;包内实存 `btn_cslider_*`/
+  `btn_cmute_bt4`/`btn_cmute_r_bt4` 通用钮 → **产品用通用钮替代了
+  per-channel 钮,per-channel 素材从未打包**。s252 同构
+  (`VOL.CHARA.SYSVOICE2`→`btn_cmute_r_bt4` 实存,c07/08/09 缺失)。
+- cgsys_ec.ypf `config\` 下仅 `sound\system\text` 三个子目录,
+  标签钮仅 `btn_tab_{sound,system,text}_*` 三族 —— 无 `other\`/
+  `sound_2\`/`sound_3\` 目录;`update1.ypf`(1,306 条)仅
+  `voice\*.ogg` + `cg\ev\*.png`,无 UI 补丁 → 三个页面的素材
+  **在任何包中都不存在**(与成果 74 的 12 包字节级终证一致)。
+- s254 的 65 个日文按钮名(ブルードラゴ 等)= 音声作品页商品表,
+  由 VARACT 运行期拼串(成果 73 hex 取证),作品表在剧本数据里,
+  按钮图未打包。
+
+#### 3. 引擎原生容错锚定 —— **Likely**(引擎同执行)/Unknown(加载时机)
+
+- 成果 62 watch oracle 已实证引擎 CGINFO 对「未找到」走 FLT 接收器
+  写 0.0 路径(writer 0x45469e)——这是引擎**设计的**未找到路径,
+  非异常。引擎执行同一剧本的全部定义点(控制流无分支跳过;
+  本实现控制流有 15 万组对拍零分歧背书)→ 引擎同样对这 97 路径
+  命中失败 → 空按钮继续运行,不报错不阻断。
+- 引擎加载时机(命令点即读图头 vs 首绘时)未取证(Unknown),
+  但两种时机下缺失文件的结局相同(空图),不影响结论。
+
+#### 4. 结论与处置
+
+剩余 151 条 = **引擎标准系统剧本引用了本产品未打包的可选 UI 素材,
+引擎原生容错(空按钮),与本实现零分歧**。不再修;唯一差异是我方
+player 每次未命中打一行日志(引擎静默),如需可降为 debug 级/
+每路径去重(未做,保持取证可见性)。
+
+#### 验证(可复现)
+
+- `python3 /tmp/scan_all_scripts.py btn_cslider btn_c01 btn_all_mask
+  btn_tab_other back_other /other sound_3 btn_show btn_check
+  mes_preview`(bn.ypf 全剧本字节级扫描,字面量计数表)。
+- `cargo run -p yuris-format --example tmp_probe_cgsys --
+  pac/cgsys_ec.ypf "config\\" 500`(config 子目录清单)+
+  对 update1.ypf 全量抽样(无 UI 条目)。
+- 失败分组:`grep "CG 图像解析失败" run.log | sed … | sort | uniq -c`
+  与上表逐组核对,合计 151。
+
+### 关联
+
+- known-issues.md 问题 2 全案终结(2.7 新增根因全景;2.6 遗留项
+  tip_mes_preview 归入同类)。
+- 成果 73/74 的后续:VARACT hex 取证中的 `sound_3/btn_01` 拼串、
+  `_N` 剥离后残余,均在本成果收口。
 
 ***
 

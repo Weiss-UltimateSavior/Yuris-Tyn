@@ -260,6 +260,37 @@ LENGTH 槽 13 及 fallback 的字节长实现;删除 `sjis_byte_len`。
 - cgsys_ec.ypf 名字首字节 0x10~0x3B 的语义(疑似与引擎哈希索引或
   分包路由相关)—— 无查找阻断,按需另立。
 
+### 2.7 全案终结:剩余 151 条根因全景(2026-09-08,成果 75)
+
+97 个唯一路径全部钉到 5 个系统 UI 剧本的 `es.BT.*` 字面量,
+**失败发生次数 == 剧本字面量个数**(全定义点无条件执行,算术闭合):
+
+| 剧本 | 页面 | 失败路径族 | 条数 |
+| --- | --- | --- | --- |
+| s251 | other(その他)页 | other/btn_show_bt4×18、btn_check_bt4×16、btn_allon/alloff_bt3×2、btn_tab_other_on×2、back_other×2 | 40 |
+| s252 | sound 页 | sound/btn_c07~09_bt4×3、btn_all_mask×3 | 6 |
+| s253 | sound_2 页 | sound_2/btn_c01~16_bt4×16、btn_all_mask×16 | 32 |
+| s254 | sound_3 页(音声作品) | sound_3/btn_01~65〈日文商品名〉_bt4×65、btn_allon/alloff_bt3×2 | 67 |
+| s250 | text 页 | text/tip_mes_preview_1/2/3×2(包内仅 `_4`) | 6 |
+| **合计** | | | **151** |
+
+根因:**引擎标准系统剧本引用了本产品未打包的可选 UI 素材**。
+
+- s253 每声道双按钮角色:`VOL.CHARA.GAUGE`→`btn_cslider_bt3`
+  (实存)与 `VOL.CHARA.MUTE.ON`→`btn_cNN_bt4`+MAP `btn_all_mask`
+  (无)—— 包用通用钮(`btn_cslider_*`/`btn_cmute_bt4`/
+  `btn_cmute_r_bt4`)替代 per-channel 钮,后者素材从未打包;
+  s252 同构(c07/08/09)。
+- cgsys_ec.ypf `config\` 仅 `sound\system\text` 三子目录、标签钮仅
+  sound/system/text 三族;update1.ypf(1,306 条)仅 voice/cg-ev,
+  无 UI → `other`/`sound_2`/`sound_3` 三页面素材在任何包中都不存在。
+- 引擎侧:成果 62 watch oracle 实证「未找到」走 FLT 写 0.0 设计路径
+  (writer 0x45469e);引擎执行同一剧本全定义点 → 同样命中失败 →
+  空按钮继续运行。**与本实现零分歧,不再修**(等级:算术闭合与包内
+  对照 Confirmed;引擎同执行 Likely;加载时机 Unknown,不影响结论)。
+- 唯一实现差异:我方 player 每次未命中打一行日志(引擎静默),
+  如噪声扰人可降 debug 级/按路径去重(未做,保留取证可见性)。
+
 ***
 
 ## 复现与工具
