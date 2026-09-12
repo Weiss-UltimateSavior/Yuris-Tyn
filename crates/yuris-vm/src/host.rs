@@ -379,8 +379,9 @@ impl PacFileIndex {
     /// 1. 直名/归一/补扩展名(`resolve_entry`);
     /// 2. `cg\{path}`(\S 的 path 相对 cg\);
     /// 3. `cgg\{name}.png` / `cg\item\{name}.png`(\BG/\S 常用族);
-    /// 4. `cg\stand\*\*\*\{name 小写}.png`(立绘分层组合的整图近似,
-    ///    多候选取首个 —— m_040/m_066 等定位组,Likely)。
+    /// 4. `cg\stand\<档位>\...\{name 小写}.png`(立绘;**档位确定性优先**,
+    ///    见 [`Self::pick_stand_key`];旧「多候选取首个」实现遍历
+    ///    HashMap → 每次启动命中随机档位,已勘误 —— layout-fix-plan §2.1)。
     pub fn read_cg_bytes(&self, path_or_name: &str) -> Option<Vec<u8>> {
         let norm = path_or_name.replace('/', "\\");
         let trimmed = norm.trim();
@@ -396,23 +397,67 @@ impl PacFileIndex {
                 return Some(b);
             }
         }
-        // 立绘模糊:cg\stand\ 任意定位组,文件名(去扩展)= name 小写
+        // 立绘:确定性档位选择(不依赖 HashMap 遍历顺序,见 layout-fix-plan P0)
         let want = trimmed.to_ascii_lowercase();
-        let stand_prefix = format!("cg\\stand\\");
-        for k in self.entry_lookup.keys() {
-            let key = String::from_utf8_lossy(k);
-            if !key.starts_with(&stand_prefix) {
-                continue;
-            }
-            let fname = key.rsplit('\\').next().unwrap_or(&key);
-            let noext = fname.strip_suffix(".png").unwrap_or(fname);
-            if noext.eq_ignore_ascii_case(&want) {
-                if let Some(b) = self.read_image_bytes(&key) {
-                    return Some(b);
-                }
+        if let Some(key) = Self::pick_stand_key(self.entry_lookup.keys(), &want) {
+            if let Some(b) = self.read_entry_key_bytes(key) {
+                return Some(b);
             }
         }
         None
+    }
+
+    /// 立绘档位优先级:剧本桥 `yst00062` 只为 `m_050`/`m_060` 预载缓存,
+    /// 参考图标定主档 = `m_050` 原始像素(docs/layout-fix-plan.md §2.1)。
+    /// 其余档为素材缺失时的确定性回退。
+    pub const TACHIE_TIER_PREF: [&'static str; 5] = ["m_050", "m_040", "m_060", "m_030", "m_066"];
+
+    /// 从条目键集合中挑立绘键(纯函数,可单测):
+    /// 仅 `cg\stand\<档位>\` 前缀、文件名(去扩展)与 `want` 等值(忽略
+    /// 大小写);按 [`Self::TACHIE_TIER_PREF`] 取最高优先档。**与遍历
+    /// 顺序无关** —— 同档内多键指向同一条目,内容等价。
+    fn pick_stand_key<'a>(
+        keys: impl Iterator<Item = &'a Vec<u8>>,
+        want: &str,
+    ) -> Option<&'a Vec<u8>> {
+        let mut best: Option<(usize, &'a Vec<u8>)> = None;
+        for k in keys {
+            let key = String::from_utf8_lossy(k);
+            let Some(rest) = key.strip_prefix("cg\\stand\\") else {
+                continue;
+            };
+            let fname = rest.rsplit('\\').next().unwrap_or(rest);
+            let noext = fname.strip_suffix(".png").unwrap_or(fname);
+            if !noext.eq_ignore_ascii_case(want) {
+                continue;
+            }
+            let Some(rank) = Self::TACHIE_TIER_PREF
+                .iter()
+                .position(|t| rest.starts_with(&format!("{t}\\")))
+            else {
+                continue;
+            };
+            if best.map_or(true, |(br, _)| rank < br) {
+                best = Some((rank, k));
+            }
+        }
+        best.map(|(_, k)| k)
+    }
+
+    /// 按条目键直读 stored PNG(免字符串回环;非 UTF-8 名安全)。
+    fn read_entry_key_bytes(&self, key: &[u8]) -> Option<Vec<u8>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let &(pi, ei) = self.entry_lookup.get(key)?;
+        let (pack_path, index) = &self.packs[pi];
+        let e = &index.entries[ei];
+        if e.flag != 0xCB {
+            return None;
+        }
+        let mut f = std::fs::File::open(pack_path).ok()?;
+        f.seek(SeekFrom::Start(e.offset as u64)).ok()?;
+        let mut raw = vec![0u8; e.compressed_len as usize];
+        f.read_exact(&mut raw).ok()?;
+        Some(raw)
     }
 
     /// 条目键遍历(音频名解析用;含全名与剥根名两套键)。
@@ -464,5 +509,43 @@ impl PacFileIndex {
             })
             .map(|(_, v)| v)
             .next()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn keys(list: &[&str]) -> Vec<Vec<u8>> {
+        list.iter().map(|s| s.as_bytes().to_vec()).collect()
+    }
+
+    #[test]
+    fn pick_stand_key_prefers_m050_regardless_of_order() {
+        let k = keys(&[
+            "cg\\stand\\m_066\\a_han\\a_han_1a\\a_han_1a0100.png",
+            "cg\\stand\\m_030\\a_han\\a_han_1a\\a_han_1a0100.png",
+            "cg\\stand\\m_050\\a_han\\a_han_1a\\a_han_1a0100.png",
+            "cg\\stand\\m_040\\a_han\\a_han_1a\\a_han_1a0100.png",
+        ]);
+        let got = PacFileIndex::pick_stand_key(k.iter(), "a_han_1a0100").unwrap();
+        assert!(String::from_utf8_lossy(got).contains("m_050"));
+
+        let k2: Vec<Vec<u8>> = k.iter().rev().cloned().collect();
+        let got2 = PacFileIndex::pick_stand_key(k2.iter(), "a_han_1a0100").unwrap();
+        assert!(String::from_utf8_lossy(got2).contains("m_050"));
+    }
+
+    #[test]
+    fn pick_stand_key_fallbacks_and_filters() {
+        let k = keys(&[
+            "cg\\face\\a_han\\a_han_1a\\a_han_1a0100.png",
+            "cg\\stand\\m_066\\a_han\\a_han_1a\\a_han_1a0100.png",
+            "cg\\stand\\m_050\\a_han\\a_han_1a\\a_han_1a0200.png",
+        ]);
+        // m_050 存在但文件名不匹配 → 回退 m_066;face 不参与
+        let got = PacFileIndex::pick_stand_key(k.iter(), "a_han_1a0100").unwrap();
+        assert!(String::from_utf8_lossy(got).contains("m_066"));
+        assert!(PacFileIndex::pick_stand_key(k.iter(), "nope").is_none());
     }
 }

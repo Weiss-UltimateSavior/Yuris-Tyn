@@ -1,0 +1,170 @@
+# 画面布局修复计划 —— 立绘 / 背景 CG / 游戏内 UI 错位
+
+> 状态:P0/P1/P2 已实装(2026-09-12,成果 83,单测全绿);实机对拍待用户。
+> P3(\FACE/\EV)保持未勾选 —— 需先补取证(见 §3 P3)。
+> 方法:证据等级驱动逆向(Confirmed / Likely / Hypothesis / Unknown)。
+> 关联:`docs/in-game-ui-plan.md`(P8.2b VM UI 接入;本文件是其后续勘误 9+ 的收口)、
+> `docs/title-menu-plan.md`。
+> 参考图:用户提供的原版截图 `img_014`(1920×1080,用户裁定「正确的 UI 排版和定位」)。
+
+## 1. 现象(用户实机报告)
+
+1. 游戏中的 UI 依旧错位;
+2. 背景 CG 错位;
+3. 人物立绘错位(尺寸不一、被切、位置不对)。
+
+## 2. 根因分析
+
+### 2.1 立绘(人物)档位随机 —— **Confirmed**
+
+- 解析链:`yuris-vm/src/host.rs::read_cg_bytes` 的立绘模糊查找遍历
+  `entry_lookup.keys()`(`HashMap`,Rust 每次进程启动随机哈希种子)→
+  同一角色/不同角色随机命中 `cg\stand\m_030/040/050/060/066` 之一。
+- 实测(ui.log 同一次运行):
+
+  | 角色 | 本次命中档位 | 实测尺寸 |
+  | --- | --- | --- |
+  | A_HAN_1A0100 | m_040 | 925×1661 |
+  | C_SIR_1B0100 | m_060 | 1495×2687 |
+  | K_PEN_1A0100 | m_066 | 497×578 |
+  | M_LOP_1A0100 | m_050 | 427×579 |
+  | L_NYA_1A0100 | (小档) | 287×502 |
+
+  五档为同一张画的不同预缩放(实测比例 = 30/40/50/60/66%),混用即
+  「大小/位置乱、被切头」。
+- 引擎运行期只用两档:剧本桥 `yst00062` 的 `\T` 处理器只预载
+  `cg/stand/m_050/` 与 `m_060/`(静态解码,Confirmed)。
+- 参考图标定:管家 `V_YAG_1A0100` 头上缘 ≈ y8–14,而 m_050 素材 alpha
+  上缘 = 14 → 引擎 = **m_050 原始像素、1:1**(Likely,参考图测量)。
+
+### 2.2 立绘锚点公式错误 —— **Likely(参考图)/UNVERIFIED(待实机)**
+
+- 现实现 `player-core/src/lib.rs::show_tachie`:
+  `py = LOGICAL_H - ih + y`(**底边锚**)。
+- 参考图管家在 `y=0` 时头上缘 ≈ 屏幕 y=8–14(素材 bbox 上缘 14)
+  → 锚点应为 **顶边**:`py = y`;x 维持 `960 + x - iw/2`(中心偏移)。
+- 现公式在参考语义下会把 2000+ px 高的立绘整头切掉。
+
+### 2.3 背景 CG 被拉伸 + 相机未实现 —— **Confirmed**
+
+- bg52/bg01a/bg03c 实测全部 **2400×1200(2:1)**;
+  `show_bg` 强制 `scale = LOGICAL_W/iw, LOGICAL_H/ih` → 拉成 16:9 且
+  展示区域错误。
+- `\BG.CMXYZ(x,y,z)`(相机位移)被忽略:
+  `scenario.rs:373` 的 `"CMXYZ"` 分支对 `\BG.CMXYZ` 永不命中
+  (命令名 = modifiers 分离模型下 name="BG"),实际落入 `"BG"` 臂被
+  当作背景名(`ui.log` 可见 `BG "0" 解析=纯色`);
+  `\EV.CMXYZ` 落入默认「跳过命令」。
+
+### 2.4 游戏内 UI:主按钮行缺失 + 状态件常显 —— **Confirmed(代码)/Likely(机制)**
+
+- 参考图底部行(常显):LOG / AUTO / SKIP / SAVE / LOAD / Q.SAVE /
+  Q.LOAD / 音量 / 齿轮 / PIN MENU;右列:home / power。
+  素材 = `cgsys\main\button\type1\btn_*.png` 三~五态图集
+  (实测尺寸:bt3=3 段×114、bt4(n)=4~5 段×114,gear=3×69,
+  volume=3×69,title/end=3×31,menulock=4×64)。
+- 这些按钮由 `ES.GAMEMAIN.BTN.*` 管理,注册在 `yst00126` 的
+  `es.BT.W0/W1` 流程内;触发链含 scenario 宏 `\WINDOWMODE(1/2)`
+  (全语料 27 处,`yst00070` 定义为 ScenarioMacro)。
+  **本实现 scenario 播放器未处理 `\WINDOWMODE`(全 crate 0 引用)** →
+  主按钮行从未注册/显示。
+- 反面:`autoskipicon`(AUTO+SKIP 药丸)、`pop/tip_{voice,vomode,title,
+  config,menulock,end}`、`skipicon`、`count/icon_*` 等**仅状态激活时
+  显示**的注册件被注册表重放全量常显 → 实机截图出现右上 AUTO+SKIP、
+  右侧 VOICE TEST/TITLE/EXIT/END 药丸堆叠、顶部页码小标签。
+- 已显示件坐标多数与注册表一致(CONFIG@1782,1002 等),问题是
+  **可见性/状态**,不是坐标换算。
+
+### 2.5 `\EV`(事件 CG)与 `\FACE`(表情切换)未实现 —— **Confirmed**
+
+- `\EV(...)` 全部走「跳过命令」(ui.log 实证);`\FACE(...)` 同。
+- `\FACE` 变体资源 `cg\face\<chara>\<pose>\<pose>0100.png` 实存
+  (a_han/v_yag 等,静态解码 yst00062 的 FACE 处理器)。
+
+## 3. 修复路线(分阶段)
+
+### P0 立绘(档位 + 锚点) —— 本文件实施
+
+- [x] P0-1 `read_cg_bytes` 立绘查找改**确定性档位优先**:
+      `m_050 → m_040 → m_060 → m_030 → m_066`,同档内按基名精确匹配;
+      不再依赖 HashMap 遍历顺序。
+- [x] P0-2 `show_tachie` 锚点改顶边:`py = y`(x 保持中心偏移);
+      注明 `// UNVERIFIED(锚点)`。
+- [x] P0-3 单测:档位优先级(合成索引)/ 锚点数值(合成资源)。
+
+**验证点(实机)**:同一场景两名角色大小风格一致(不再一大一小);
+立绘头部完整(以头为顶),底部按剧本 y 值下探/裁切。
+
+### P1 背景(原生尺寸 + 相机) —— 本文件实施
+
+- [x] P1-1 scenario 解析:`name="BG"/"EV"` + `modifiers.contains("CMXYZ")`
+      → `host.bg_camera(x,y,z)` / `host.ev_camera(x,y,z)`;删除失效的
+      `"CMXYZ"` 死分支。
+- [x] P1-2 `show_bg` 改原生尺寸 + 居中 + 相机偏移:
+      `x = (1920-iw)/2 - cam.x`,`y = (1080-ih)/2 - cam.y`,不缩放;
+      z 暂记日志(Unknown)。
+- [x] P1-3 新增 `bg_cam` 字段(`PlayerCore` 构造点同步)与相机更新 API。
+- [x] P1-4 单测:相机签名解析(`\BG.CMXYZ` 不再当背景名)。
+
+**验证点(实机)**:背景不再横向压扁;`\BG.CMXYZ` 切景时画面平移
+(方向符号待实机确认,若反向改 `+cam.x`)。
+
+### P2 游戏内 UI(可见性 + 主按钮行) —— 本文件实施到「可见性 + 行上屏」
+
+- [x] P2-1 `vm_ui_layer_allowed` 默认隐藏状态件家族:
+      `main/pop/`、`main/autoskipicon/`、`main/skipicon/`、`main/count/`
+      (参考图常显面不含它们;状态机实装时再放开)。
+- [x] P2-2 新增 ADV 主按钮行(参考图逐像素标定,原始坐标):
+
+      | 按钮 | 素材 | 参考图坐标 | 尺寸 |
+      | --- | --- | --- | --- |
+      | LOG | btn_backlog_bt3 | (1048,1040) | 114×39 |
+      | AUTO | btn_auto_bt4 | (1148,1040) | 114×39 |
+      | SKIP | btn_skip_bt4n | (1248,1040) | 114×39 |
+      | SAVE | btn_save_bt3n | (1348,1040) | 114×39 |
+      | LOAD | btn_load_bt3n | (1448,1040) | 114×39 |
+      | Q.SAVE | btn_qsave_bt3n | (1548,1040) | 114×39 |
+      | Q.LOAD | btn_qload_bt3n | (1648,1040) | 114×39 |
+      | 音量 | btn_volume_bt3 | (1748,1040) | 69×39 |
+      | 齿轮 | btn_config_bt3 | (1803,1040) | 69×39 |
+      | PIN MENU | btn_menulock_bt4 | (1860,1040) | 64×39 |
+      | HOME | btn_title_bt3 | (1882,952) | 31×31 |
+      | POWER | btn_end_bt3 | (1882,989) | 31×31 |
+
+      (模板匹配相关系数 0.73~0.99;HOME 0.44 待实机复核。)
+- [x] P2-3 `\WINDOWMODE(n)`:新增 ScenarioHost 方法,记录 + ADV 行显隐
+      (语义 Unknown,先 1/2 均视为显示;日志留痕)。
+- [x] P2-4 悬停态切换复用 `tri_state_pass`(图集裁剪为三态)。
+- [x] P2-5 单测:可见性规则(新增四家族拒绝)。
+
+**验证点(实机)**:进正篇后底部出现 10+2 按钮行,位置与参考图一致;
+右上 AUTO+SKIP、右侧药丸堆叠消失(悬停时按钮变色)。
+
+### P3 `\FACE` / `\EV` —— 本文件后续
+
+- [ ] P3-1 `\FACE(name)`:替换同角色当前立绘资源为
+      `cg/face/<chara>/<pose>/<pose>0100`(尺寸保持/重锚待标定)。
+- [ ] P3-2 `\EV(name, …)`:显示事件 CG(原生尺寸 + `\EV.CMXYZ` 相机),
+      复用 bg 相机模型。
+- [ ] P3-3 关闭/清理路径与快存读档(图层登记)。
+
+**验证点(实机)**:对话中表情随 `\FACE` 切换;事件场景不再黑屏/缺图。
+
+## 4. 验收标准
+
+- 立绘:同场景多角色比例一致(档位统一);头部不切、以下缘随 `y`;
+- 背景:不变形;相机切换有平移;
+- UI:底部主行完整且与参考图坐标一致;状态件(药丸/页码标签)默认
+  不出现;标题/子画面无残留叠层;
+- `cargo test --workspace` 全绿;release 构建通过。
+
+## 5. 风险登记
+
+| 风险 | 等级 | 缓解 |
+| --- | --- | --- |
+| m_050 档位在个别角色缺失 | Confirmed(素材存在例外) | 优先级回退链 + 日志 |
+| 顶边锚点在 p≈250 场景需不同档/缩放 | Unknown | 先统一 m_050;实机对照参考图再校准 |
+| 背景相机方向符号 | Likely | 实机对拍,反向即改符号 |
+| 参考图按钮坐标为模板匹配测量 | Likely | 实机截图复核;与注册表值(CONFIG 等)交叉验证 |
+| 隐藏状态件后交互入口缺失 | Confirmed(取舍) | 悬停/点击状态机为后续(第 4 步),当前优先视觉正确 |
+| `\WINDOWMODE` 语义未逆向 | Unknown | 仅记录 + 门控,不猜具体分支行为 |

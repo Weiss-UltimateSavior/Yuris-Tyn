@@ -1213,6 +1213,10 @@ LAB\_00453178/LAB\_004550a0 来自 FUN\_0046305c 命令表,下标换算 slot=ind
 | 资源      | config 系 UI 按钮 btn_all_mask/btn_c01~16/other/* 真缺失 | **Confirmed(字节级)**                | 12 包 XOR-0xC9 检索不存在;引擎同表现空按钮,非分歧(成果 74)                          |
 | 资源      | 剩余 151 条失败根因 = 产品未打包可选素材             | **Confirmed(算术闭合)/Likely(引擎同执行)**   | 97 路径↔s250~s254 字面量逐组钉死,失败次数==字面量数(40+6+32+67+6=151);config 仅 sound/system/text 三页,通用钮替代 per-channel 钮;引擎未找到=设计路径(成果 75) |
 | UI        | 标题按钮盲推进(点任意按钮都进游戏) → 已路由         | **Confirmed(命中路由)/Likely(START 落入)**   | 根因 = `\TITLE`+Wait::Line 盲推进,按钮纯贴图;Wait::TitleMenu+poll_title_menu 五按钮命中路由,END 实测 exit 0,LOAD 失败不落穿(成果 76) |
+| 资源      | 立绘档位选择                                 | **Confirmed(剧本桥缓存)/Likely(参考图)**       | 引擎只用 m_050/m_060(yst00062 只预载两档);实现 m_050 优先确定性选择;旧 HashMap 遍历随机档已勘误(成果 83) |
+| 资源      | 立绘锚点(y = 顶边)                           | **Likely(参考图测量)**                      | 参考图管家 y=0 头缘 8~14 ≈ m_050 素材 bbox 上缘 14;待实机对拍升级(成果 83) |
+| Runtime   | BG 原生尺寸 + `\BG.CMXYZ` 相机               | **Likely(模型)**                          | 2400×1200 不再拉伸;`x=(1920-iw)/2-cam.x` 方向符号待实机(成果 83)          |
+| UI        | ADV 主按钮行坐标                              | **Likely(参考图模板匹配)**                    | 12 钮 @1920×1080 模板匹配 corr 0.73~0.99(HOME 0.44);待实机复核(成果 83)   |
 | Runtime | 免封包优先级                                | **Confirmed（机制）**                      | YSCM 含 `FILEPRIORITY*` 键                                                     |
 | 资源      | 图片格式                                  | **Likely**                             | YSCM 含 `BMP PNG JPG GIF AVI PSB WEBP`                                        |
 | 资源      | 音频格式                                  | **Likely**                             | YSCM 含 `WAV OGG`                                                             |
@@ -3582,7 +3586,14 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
   槽保持现有坐标(成果 62 保持原值语义);③ XY.SET 晚于 CG.SET → `CgAct`
   事件经 `GroupVm::cg_position` 同步层坐标(`CgState` 增 file 字段,快照
   四元组);④ 双重底框 → VM 消息窗上屏后撤画 SC_WIN;⑤ 重放泄漏 →
-  与建层同一 main 通道过滤。详见 in-game-ui-plan.md 勘误 6。
+   与建层同一 main 通道过滤。详见 in-game-ui-plan.md 勘误 6。
+- **勘误 7/8(补记;详情见 in-game-ui-plan.md §3.1)**:上轮实机迭代的
+  两处修正当时只写入计划文档,未同步本文件(违反唯一进度源约定,此处
+  补记):勘误 7 = 通道白名单仅 `cgsys/main/` 导致 SAVE/LOAD/QS/QL
+  (位于 `cgsys/saveload/`)缺失 → 放宽为全部 `cgsys/`;勘误 8 = 重放
+  清单 158 层诊断出同钮各态(OFF/ON/OVER/ONOV/NA)全显互相叠印 →
+  按 es.BT 基名收敛一层(态优先级 OFF<ON<OVER<ONOV<NA,仅 NA 亦显示),
+  `vm_ui_prio` 记录基名当前态。
 
 **验证**:
 
@@ -3597,6 +3608,85 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
 - docs/in-game-ui-plan.md:第 1/2 步勾选 + 实装记录;第 3/4 步待实机;
 - 若按钮免费生效,P9.2(输入)范围大幅缩减;若 z 序/位置错,按截图对拍
   调整(第 3 步)。
+
+***
+
+## 2026-09-12 画面布局修复:立绘档位/锚点 + 背景相机 + UI 可见性/主行(成果 83)
+
+### 成果 83:三处错位根因收口 —— **Confirmed(代码+单测)/Likely(参考图标定,待实机)**
+
+**用户报告**:游戏内 UI 依旧错位;背景 CG 与人物立绘也错位。
+配套计划与逐项清单:`docs/layout-fix-plan.md`(证据分级 + 参考图标定)。
+
+**根因(证据)**:
+
+1. **立绘档位随机**(Confirmed):`host.rs::read_cg_bytes` 立绘模糊查找
+   遍历 `entry_lookup`(`HashMap`,进程哈希种子随机)→ 每次启动/每角色
+   命中不同 `cg\stand\m_030/040/050/060/066` 档。ui.log 同一次运行实测:
+   A_HAN=m_040(925×1661)、C_SIR=m_060(1495×2687)、K_PEN=m_066
+   (497×578)、M_LOP=m_050(427×579)。剧本桥 `yst00062` 只为
+   `cg/stand/m_050/`+`m_060/` 预载缓存 → 引擎运行期只用两档。
+2. **立绘锚点错误**(Likely/参考图):旧 `py = 1080-ih+y`(底边锚)会把
+   2000+px 立绘切头。用户提供的原版参考图(1920×1080,裁定「正确的
+   UI 排版和定位」)实测:管家 V_YAG 头上缘 y≈8~14,m_050 素材 alpha
+   bbox 上缘 = 14 → 引擎 = m_050 原生像素 + **顶边锚**(`py = y`)。
+3. **背景被拉伸 + 相机未实现**(Confirmed):bg52/bg01a/bg03c 实测全部
+   2400×1200(2:1),旧实现强拉 1920×1080(16:9);`\BG.CMXYZ` 在
+   命令名/修饰符分离模型下 name="BG"/mod="CMXYZ",旧的
+   `name=="CMXYZ"` 分支永不命中 → 相机行被当换背景(ui.log 曾见
+   `BG "0" 解析=纯色`)。
+4. **游戏内 UI 缺主行 + 状态件常显**(Confirmed 代码/Likely 机制):
+   主行(LOG/AUTO/SKIP/SAVE/LOAD/Q.SAVE/Q.LOAD/音量/齿轮/PIN
+   MENU/home/power)由 `es.BT.W0/W1` 管理,触发链含 scenario 宏
+   `\WINDOWMODE(1/2)`;scenario 播放器未处理 WINDOWMODE(全 crate 0
+   引用)→ 主行从未上屏。反面 `autoskipicon`/`skipicon`/`pop/tip_*`/
+   `count` 仅状态激活时显示的件被注册表重放常显(右上 AUTO+SKIP、
+   右侧药丸堆叠根因)。
+
+**实现**:
+
+- `yuris-vm/host.rs`: `TACHIE_TIER_PREF`(m_050→m_040→m_060→m_030→
+  m_066)+ `pick_stand_key`(纯函数,与遍历顺序无关)+
+  `read_entry_key_bytes`(原始键直读,非 UTF-8 名安全)。
+- `player-core`: `show_tachie` 锚点改顶边(`py = y`,x 仍中心偏移);
+  `show_bg` 原生尺寸 + 居中 + `bg_cam`(`x=(1920-iw)/2-cam.x`);
+  `bg_camera` 同步已上屏 BG 层;`vm_ui_layer_allowed` 新增 deny 四家族
+  (pop/autoskipicon/skipicon/count);`ADV_BUTTONS` 12 钮(参考图模板
+  匹配标定,corr 0.73~0.99)+ `build_adv_row`/`update_adv_buttons`/
+  `adv_button_hit`(点击消费,动作路由 P9.2 待实装);`\WINDOWMODE`
+  记录;场景 `\GO` 不清主行,标题接管时清。
+- `scenario`: `BG`/`EV` + `CMXYZ` modifier 路由到相机通道;
+  `window_mode` 宿主面;trait 文档同步。
+
+**验证(可复现)**:
+
+- `cargo test -p yuris-vm`(新增 `pick_stand_key_prefers_m050_regardless_of_order`/
+  `pick_stand_key_fallbacks_and_filters`);
+- `cargo test -p yuris-player-core`(新增 `camera_tests` 2 +
+  `layout_tests` 2:状态件过滤/主行定义屏内);
+- `cargo test --workspace` **157 全绿**(49 套件);`cargo build --release
+  -p yuris-cli` 通过;
+- `cargo run -p yuris-vm --example tmp_tachie_probe -- <游戏目录>
+  L_NYA_1A0100 M_LOP_1A0100 K_PEN_1A0100 A_HAN_1A0100 V_YAG_1A0100`
+  → 全部确定性命中 m_050(358×628 / 427×579 / 377×438 / 1157×2076 /
+  857×2315);
+- **实机(待用户)**:按 `docs/layout-fix-plan.md` 验收标准逐项核对
+  (立绘比例/不切头;背景不拉伸、相机平移方向;主行 12 钮位置与
+  参考图一致;药丸堆叠/页码标签消失;标题无残留)。
+
+**遗留(P3,保持未勾选)**:
+
+- `\FACE` 变体切换:face 画布与 stand 尺寸的对应关系未标定(直接换
+  资源会改变显示尺寸),需先取证;
+- `\EV` 事件 CG:146 组全带名、无空名 hide 语义,`\EV.CMXYZ` 与 EV
+  同现;隐藏时机未见 → 保持跳过 + 记录;
+- ADV 主行动作路由(P9.2)与状态件悬停/激活状态机。
+
+### 关联
+
+- `docs/layout-fix-plan.md`(计划 + 参考图标定表);
+- 成果 82 勘误 7/8 已补记于上一条(计划文档 `in-game-ui-plan.md` §3.1
+  为其原始记录)。
 
 ***
 

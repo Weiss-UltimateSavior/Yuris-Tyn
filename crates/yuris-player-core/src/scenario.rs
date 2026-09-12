@@ -8,8 +8,9 @@
 //! - `\S(name, path, …)`:`path` 相对 `cg\`(实证 item/logo_wp);
 //! - `\BG(name, …)`:`cg\bg\{name}.png`(实证 bg52);`white`/`black`
 //!   等颜色名 → 纯色层;
-//! - `\T(name, ms, x, y, …)`:`L_NYA_1A0100` → `cg\stand\*\*\*\{name 小写}.png`
-//!   (多候选取首个;角色立绘为分层合成,此处取整图近似)。
+//! - `\T(name, ms, x, y, …)`:`L_NYA_1A0100` → `cg\stand\<档位>\...` 的
+//!   全图。档位**确定性优先 m_050**(剧本桥只预载 m_050/m_060;参考图
+//!   标定原生像素 —— docs/layout-fix-plan.md P0);x = 中心偏移,y = 顶边。
 //!
 //! 台词等待:LT 行显示后**等待点击**(点击推进);\T 的 ms 为自动等待
 //! (点击可跳过);\WA(ms) 纯延时。
@@ -23,10 +24,22 @@ use yuris_scenario::{parse_scenario_with, Element, Param, Scenario};
 pub trait ScenarioHost {
     /// 显示/更新背景(淡入 ms;name 为颜色名时给 None 资源 + 颜色)。
     fn show_bg(&mut self, name: &str, fade_ms: u64, color: [u8; 3]);
+    /// 背景相机位移(`\BG.CMXYZ(x, y, z)`;成果 49 相机模型,
+    /// layout-fix-plan P1。z 语义 Unknown,实现方仅记录)。
+    fn bg_camera(&mut self, x: i64, y: i64, z: i64) {
+        let _ = (x, y, z);
+    }
+    /// 事件 CG 相机位移(`\EV.CMXYZ`;P3 EV 实装后应用)。
+    fn ev_camera(&mut self, x: i64, y: i64, z: i64) {
+        let _ = (x, y, z);
+    }
+    /// `\WINDOWMODE(n)`:文本窗口显示模式。语义 Unknown(全语料仅 1/2),
+    /// 仅记录 + 日志,不猜分支行为(layout-fix-plan P2-3)。
+    fn window_mode(&mut self, _mode: i64) {}
     /// 显示精灵(\S):path 相对 cg\;(x,y) = 左上角(0,0 = 全屏图原位),
     /// 原生尺寸,fade_ms 淡入。
     fn show_sprite(&mut self, name: &str, path: Option<&str>, x: i64, y: i64, fade_ms: u64);
-    /// 显示立绘(\T):x = 中心偏移,y = 底部偏移,fade_ms 淡入。
+    /// 显示立绘(\T):x = 中心偏移,y = 顶边,fade_ms 淡入。
     fn show_tachie(&mut self, name: &str, x: i64, y: i64, fade_ms: u64);
     /// 处置精灵(淡出 ms)。
     fn hide_sprite(&mut self, name: &str, fade_ms: u64);
@@ -370,9 +383,16 @@ impl ScenarioPlayer {
             }
         };
         match name {
-            "CMXYZ" if !modifiers.is_empty() => {
-                // \BG.CMXYZ(x, y, z) = 相机位移(成果 49);不换背景,切片忽略
-                host.log(&format!("跳过相机位移 CMXYZ({})", s(0)));
+            // 相机位移:\BG.CMXYZ(x,y,z) / \EV.CMXYZ(x,y,z)(成果 49)。
+            // 勘误(layout-fix-plan §2.3):命令名/修饰符分离模型下此处
+            // name = "BG"/"EV"、modifier = "CMXYZ";旧实现以
+            // name == "CMXYZ" 匹配 → 永不命中,`\BG.CMXYZ` 被当作换背景。
+            "BG" if modifiers.iter().any(|m| m == "CMXYZ") => {
+                host.bg_camera(n(0), n(1), n(2));
+                false
+            }
+            "EV" if modifiers.iter().any(|m| m == "CMXYZ") => {
+                host.ev_camera(n(0), n(1), n(2));
                 false
             }
             "BG" => {
@@ -566,6 +586,11 @@ impl ScenarioPlayer {
                 self.done = true;
                 true
             }
+            "WINDOWMODE" => {
+                // 文本窗口显示模式(1/2;语义 Unknown,记录不猜 —— P2-3)
+                host.window_mode(n(0));
+                false
+            }
             other => {
                 // 修饰符链/长尾命令(.D 处置、.CMXYZ 相机等)切片外:记录不猜
                 let mods = if modifiers.is_empty() {
@@ -739,5 +764,77 @@ mod title_menu_tests {
         let (g1, resets) = run_title_click(TitleMenuAction::Outline);
         assert_eq!(g1, Some(2), "OUTLINE 应写 G1=2");
         assert_eq!(resets, 1, "应命中 \\GO.G.IF 跳 ARA(1 次 reset_scene),而非兜底");
+    }
+}
+
+#[cfg(test)]
+mod camera_tests {
+    //! `\BG.CMXYZ` / `\EV.CMXYZ` 解析回归(layout-fix-plan P1-4):
+    //! 命令名/修饰符分离模型下必须走相机通道,不得再被当作换背景
+    //! (旧实现 name=="CMXYZ" 分支永不命中,已勘误)。
+
+    use super::*;
+    use std::cell::RefCell;
+
+    #[derive(Default)]
+    struct CamHost {
+        bgs: RefCell<Vec<(String, i64)>>,
+        bcam: RefCell<Vec<(i64, i64, i64)>>,
+        ecam: RefCell<Vec<(i64, i64, i64)>>,
+    }
+    impl ScenarioHost for CamHost {
+        fn show_bg(&mut self, name: &str, fade_ms: u64, _: [u8; 3]) {
+            self.bgs.borrow_mut().push((name.to_string(), fade_ms as i64));
+        }
+        fn show_sprite(&mut self, _: &str, _: Option<&str>, _: i64, _: i64, _: u64) {}
+        fn show_tachie(&mut self, _: &str, _: i64, _: i64, _: u64) {}
+        fn hide_sprite(&mut self, _: &str, _: u64) {}
+        fn fade(&mut self, _: bool, _: u64, _: [u8; 3]) {}
+        fn show_text(&mut self, _: Option<u32>, _: &str, _: &str) {}
+        fn clear_text(&mut self) {}
+        fn play_voice(&mut self, _: &str) {}
+        fn play_bgm(&mut self, _: &str, _: Option<i64>) {}
+        fn play_se(&mut self, _: &str) {}
+        fn title_screen(&mut self) {}
+        fn poll_choice(&mut self, _: usize) -> Option<usize> {
+            None
+        }
+        fn show_choices(&mut self, _: &[String]) {}
+        fn clear_choices(&mut self) {}
+        fn reset_scene(&mut self) {}
+        fn global(&self, _: usize) -> i64 {
+            0
+        }
+        fn log(&mut self, _: &str) {}
+        fn bg_camera(&mut self, x: i64, y: i64, z: i64) {
+            self.bcam.borrow_mut().push((x, y, z));
+        }
+        fn ev_camera(&mut self, x: i64, y: i64, z: i64) {
+            self.ecam.borrow_mut().push((x, y, z));
+        }
+    }
+
+    fn run(script: &str) -> CamHost {
+        let mut p = ScenarioPlayer::new(vec![("t.txt".into(), script.as_bytes().to_vec())]);
+        let _ = p.goto("S");
+        let mut h = CamHost::default();
+        p.tick(&mut h, false);
+        h
+    }
+
+    #[test]
+    fn bg_cmxyz_routes_to_camera_not_bg() {
+        let h = run("#S\n\\BG.CMXYZ(108, 0, -51)\n\\BG(bg04b , 260, 0, 0)\n");
+        assert_eq!(*h.bcam.borrow(), vec![(108, 0, -51)]);
+        let bgs = h.bgs.borrow();
+        assert_eq!(bgs.len(), 1, "CMXYZ 不得触发 show_bg");
+        assert_eq!(bgs[0].0, "bg04b", "相机行之后才是真背景");
+    }
+
+    #[test]
+    fn ev_cmxyz_routes_to_ev_camera() {
+        let h = run("#S\n\\EV.CMXYZ(-72, -216, -64)\n");
+        assert_eq!(*h.ecam.borrow(), vec![(-72, -216, -64)]);
+        assert!(h.bgs.borrow().is_empty());
     }
 }

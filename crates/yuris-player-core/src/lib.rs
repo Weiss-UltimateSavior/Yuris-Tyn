@@ -108,8 +108,37 @@ fn vm_ui_layer_allowed(path_lower: &str, allow_vm_ui: bool) -> bool {
     if norm.contains(r"cgsys\title\") || norm.contains(r"cgsys\extra\") {
         return false; // 内置标题/EXTRA 子画面接管
     }
+    // 状态件家族(P2-1,layout-fix-plan §2.4):pop/tip 药丸、AUTO+SKIP/
+    // SKIP 图标、页码 count 图标在参考图常显面均不可见(仅悬停/激活时
+    // 出现);状态机实装前默认隐藏,否则全量注册表重放会叠成药丸堆。
+    if norm.contains(r"cgsys\main\pop\")
+        || norm.contains(r"cgsys\main\autoskipicon\")
+        || norm.contains(r"cgsys\main\skipicon\")
+        || norm.contains(r"cgsys\main\count\")
+    {
+        return false;
+    }
     norm.contains(r"cgsys\")
 }
+
+/// ADV 主按钮行(layout-fix-plan P2-2):参考图 1920×1080 模板匹配标定
+/// (相关系数 0.73~0.99;HOME 0.44 待实机复核)。
+/// 字段:(层 id, x, y, 宽, 高, 素材路径, 图集段数)。
+/// 素材 = `cgsys\main\button\type1\btn_*.png` 横排图集,首段 = OFF。
+pub const ADV_BUTTONS: &[(u64, f32, f32, u32, u32, &str, usize)] = &[
+    (0x5C_9000_0001, 1048.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_backlog_bt3", 3),
+    (0x5C_9000_0002, 1148.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_auto_bt4", 4),
+    (0x5C_9000_0003, 1248.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_skip_bt4n", 5),
+    (0x5C_9000_0004, 1348.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_save_bt3n", 4),
+    (0x5C_9000_0005, 1448.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_load_bt3n", 4),
+    (0x5C_9000_0006, 1548.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_qsave_bt3n", 4),
+    (0x5C_9000_0007, 1648.0, 1040.0, 114, 39, "cgsys/main/button/type1/btn_qload_bt3n", 4),
+    (0x5C_9000_0008, 1748.0, 1040.0, 69, 39, "cgsys/main/button/type1/btn_volume_bt3", 3),
+    (0x5C_9000_0009, 1803.0, 1040.0, 69, 39, "cgsys/main/button/type1/btn_config_bt3", 3),
+    (0x5C_9000_000A, 1856.0, 1040.0, 64, 39, "cgsys/main/button/type1/btn_menulock_bt4", 4),
+    (0x5C_9000_000B, 1882.0, 952.0, 31, 31, "cgsys/main/button/type1/btn_title_bt3", 3),
+    (0x5C_9000_000C, 1882.0, 989.0, 31, 31, "cgsys/main/button/type1/btn_end_bt3", 3),
+];
 
 /// es.BT CG 名 → (基名, 态优先级)。名字形如
 /// `ES.GAMEMAIN.BTN.VOICEM."BT.OFF=0=1` —— 同一按钮各态(OFF/ON/OVER/
@@ -325,6 +354,13 @@ pub struct PlayerCore {
     pub vm_ui_prio: std::collections::HashMap<Vec<u8>, u8>,
     /// 已进入过标题画面(P8.2b 门控:厂商 CG 阶段不建 VM UI 层)。
     pub title_seen: bool,
+    /// 背景相机位移(`\BG.CMXYZ(x,y,z)`;layout-fix-plan P1)。
+    /// 应用模型:`bg.x = (1920-iw)/2 - cam.x`(Likely,实机对拍校准)。
+    pub bg_cam: (i64, i64, i64),
+    /// ADV 主按钮行(参考图标定;layout-fix-plan P2-2)。
+    pub adv_buttons: Vec<TitleButton>,
+    /// `\WINDOWMODE(n)` 最近值(语义 Unknown,仅记录 + 日志)。
+    pub window_mode: u8,
     /// 上一帧 VM UI 门控值(false→true 沿触发注册表重放)。
     pub vm_ui_allowed_prev: bool,
     #[allow(dead_code)]
@@ -565,6 +601,8 @@ impl PlayerCore {
         for l in &inv {
             eprintln!("[vm-ui]{l}");
         }
+        // ADV 主按钮行(vm_ui_layers 之外独立管理;参考图标定)
+        self.build_adv_row();
     }
 
     /// 读 scenario 资源并上传;返回 ResourceId。
@@ -624,6 +662,78 @@ impl PlayerCore {
                 layer.resource = Some(rid);
             }
         }
+    }
+
+    /// 构建 ADV 主按钮行(layout-fix-plan P2-2;参考图坐标 + 图集三态)。
+    /// 幂等:已有行不重建;素材缺失只记日志不占位(视觉正确优先)。
+    fn build_adv_row(&mut self) {
+        if !self.adv_buttons.is_empty() {
+            return;
+        }
+        for &(id, x, y, w, h, path, segs) in ADV_BUTTONS {
+            let off = self.load_atlas_segment(path, 0, segs);
+            let on = self.load_atlas_segment(path, 1, segs);
+            let over = self.load_atlas_segment(path, 2, segs);
+            if off.is_none() {
+                eprintln!("[adv] 主行素材未命中: {path}");
+                continue;
+            }
+            self.adv_buttons.push(TitleButton {
+                rect: [x, y, w as f32, h as f32],
+                id,
+                rids: [off, on, over],
+                shown: TITLE_BTN_OFF,
+                hovered: false,
+                active: true,
+            });
+            let layer = Layer {
+                id,
+                z: 93, // 立绘(10)/场景层之上、VM 按钮带(95)之下
+                visible: true,
+                x,
+                y,
+                scale_x: 1.0,
+                scale_y: 1.0,
+                alpha: 1.0,
+                rotation: 0.0,
+                resource: off,
+            };
+            self.bridge.scene_mut().upsert_layer(layer);
+        }
+        eprintln!(
+            "[adv] 主按钮行 {} 钮(layout-fix-plan P2-2)",
+            self.adv_buttons.len()
+        );
+    }
+
+    /// ADV 主行三态(悬停/按下;动作路由 = P9.2 待实装)。
+    fn update_adv_buttons(&mut self) {
+        if self.adv_buttons.is_empty() {
+            return;
+        }
+        let (updates, hover_entered) =
+            tri_state_pass(&mut self.adv_buttons, self.cursor_logical, self.frame_clicked);
+        if hover_entered {
+            self.play_sysse(TITLE_SE_HOVER);
+        }
+        if updates.is_empty() {
+            return;
+        }
+        let scene = self.bridge.scene_mut();
+        for (id, rid) in updates {
+            if let Some(layer) = scene_mut_layer(scene, id) {
+                layer.resource = Some(rid);
+            }
+        }
+    }
+
+    /// 光标是否命中 ADV 主行(点击消费用;返回按钮下标)。
+    fn adv_button_hit(&self) -> Option<usize> {
+        let (cx, cy) = self.cursor_logical;
+        self.adv_buttons.iter().position(|b| {
+            let [x, y, w, h] = b.rect;
+            b.active && cx >= x as i64 && cx < (x + w) as i64 && cy >= y as i64 && cy < (y + h) as i64
+        })
     }
 
     /// 渲染台词/选择肢到 RGBA 白字(fontdue;按内容定宽,自动换行)。
@@ -1605,19 +1715,54 @@ impl ScenarioHost for PlayerCore {
             .as_ref()
             .and_then(|b| b.image_size(rid.0))
             .unwrap_or((1920, 1080));
+        // 原生尺寸 + 居中 + 相机位移(不拉伸;layout-fix-plan P1)。
+        // 旧实现 scale = 1920/iw × 1080/ih 会把 2400×1200 背景压成 16:9。
+        let (cx, cy, _cz) = self.bg_cam;
         let layer = Layer {
             id: SC_BG,
             z: 0,
             visible: true,
-            x: 0.0,
-            y: 0.0,
-            scale_x: LOGICAL_W / iw as f32,
-            scale_y: LOGICAL_H / ih as f32,
+            x: (LOGICAL_W - iw as f32) / 2.0 - cx as f32,
+            y: (LOGICAL_H - ih as f32) / 2.0 - cy as f32,
+            scale_x: 1.0,
+            scale_y: 1.0,
             alpha: 1.0,
             rotation: 0.0,
             resource: Some(rid),
         };
         self.bridge.scene_mut().upsert_layer(layer);
+    }
+
+    /// 背景相机位移:更新状态并同步已上屏 BG 层坐标(`\BG.CMXYZ`)。
+    fn bg_camera(&mut self, x: i64, y: i64, z: i64) {
+        self.bg_cam = (x, y, z);
+        eprintln!("[scenario] BG.CMXYZ({x},{y},{z})");
+        // 尺寸从已上屏 BG 层资源查(未上屏则仅记状态,下次 show_bg 生效)
+        let size = self
+            .bridge
+            .scene()
+            .layers
+            .iter()
+            .find(|l| l.id == SC_BG)
+            .and_then(|l| l.resource)
+            .and_then(|r| self.backend.as_ref().and_then(|b| b.image_size(r.0)));
+        if let Some((iw, ih)) = size {
+            if let Some(layer) = scene_mut_layer(self.bridge.scene_mut(), SC_BG) {
+                layer.x = (LOGICAL_W - iw as f32) / 2.0 - x as f32;
+                layer.y = (LOGICAL_H - ih as f32) / 2.0 - y as f32;
+            }
+        }
+    }
+
+    /// 事件 CG 相机(P3 EV 实装前仅记录,不猜应用)。
+    fn ev_camera(&mut self, x: i64, y: i64, z: i64) {
+        eprintln!("[scenario] EV.CMXYZ({x},{y},{z})(EV 未实装,记录)");
+    }
+
+    /// `\WINDOWMODE(n)`:记录 + 日志(语义 Unknown;layout-fix-plan P2-3)。
+    fn window_mode(&mut self, mode: i64) {
+        self.window_mode = mode.clamp(0, 255) as u8;
+        eprintln!("[scenario] WINDOWMODE({mode})(语义 Unknown,记录)");
     }
 
     fn show_sprite(&mut self, name: &str, path: Option<&str>, x: i64, y: i64, fade_ms: u64) {
@@ -1651,7 +1796,9 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn show_tachie(&mut self, name: &str, x: i64, y: i64, fade_ms: u64) {
-        // \T:立绘(stand 分层整图近似);x = 中心偏移,y = 底部偏移(Likely)
+        // \T:立绘;x = 中心偏移,y = **顶边**(参考图标定:y=0 时素材 bbox
+        // 上缘 14px ≈ 实测头缘 8~14px;档位 m_050 原生像素,layout-fix-plan P0)。
+        // UNVERIFIED(锚点):旧「y = 底部偏移」公式会把 2000+px 立绘切头。
         let Some(rid) = self.load_scenario_image(name) else {
             eprintln!("[scenario] 立绘未命中: {name}");
             return;
@@ -1666,7 +1813,7 @@ impl ScenarioHost for PlayerCore {
             self.sprites.push(id);
         }
         let px = LOGICAL_W / 2.0 + x as f32 - iw as f32 / 2.0;
-        let py = LOGICAL_H - ih as f32 + y as f32;
+        let py = y as f32;
         eprintln!("[scenario] 立绘 {name}: tex={iw}x{ih} → ({px},{py}) fade={fade_ms}");
         let alpha = if fade_ms > 0 { 0.0 } else { 1.0 };
         let layer = Layer {
@@ -1785,6 +1932,11 @@ impl ScenarioHost for PlayerCore {
             scene.hide_layer(id);
         }
         self.vm_ui_prio.clear();
+        // ADV 主按钮行隐藏并失效(标题接管视觉;回正篇经 rebuild_vm_ui 重建)
+        for b in &self.adv_buttons {
+            scene.hide_layer(b.id);
+        }
+        self.adv_buttons.clear();
         self.title_seen = true;
         // 全屏底层(path, x, y, id)→ 拉伸全屏
         let layers: [(&str, i64, i64, u64); 5] = [
@@ -2084,6 +2236,7 @@ pub struct Player {
 
 impl Player {
     pub fn tick(&mut self) {
+        let in_title = self.scenario.in_title_menu();
         let core = &mut self.core;
         // WAIT 节拍
         if core.wait_frames > 0 {
@@ -2109,10 +2262,21 @@ impl Player {
         core.consume_events(allow_vm_ui);
         core.update_fade();
         core.update_sprite_fades();
+        // ADV 主行:点击消费(禁触台词推进;动作路由 = P9.2 待实装)
+        if core.clicked && core.subui == SubUi::None && !in_title {
+            if let Some(i) = core.adv_button_hit() {
+                core.clicked = false;
+                core.play_sysse(TITLE_SE_DECIDE);
+                eprintln!("[adv] 主行按钮 #{i} 命中(动作未实装)");
+            }
+        }
         let clicked = std::mem::take(&mut core.clicked);
         self.scenario.tick(core, clicked);
         if core.subui == SubUi::None {
             core.update_title_buttons(); // 标题按钮三态(悬停/按下帧;成果 78)
+            if !in_title {
+                core.update_adv_buttons(); // ADV 主行三态(layout-fix-plan P2)
+            }
         } else {
             core.update_ui_buttons(); // 子画面按钮三态(成果 81)
         }
@@ -2343,6 +2507,9 @@ mod title_se_tests {
             bgm_page: 0,
             vm_ui_layers: Vec::new(),
             title_seen: false,
+            bg_cam: (0, 0, 0),
+            adv_buttons: Vec::new(),
+            window_mode: 0,
             vm_ui_prio: HashMap::new(),
             vm_ui_allowed_prev: false,
             game_dir: std::path::PathBuf::new(),
@@ -2450,6 +2617,9 @@ mod subui_tests {
             bgm_page: 0,
             vm_ui_layers: Vec::new(),
             title_seen: false,
+            bg_cam: (0, 0, 0),
+            adv_buttons: Vec::new(),
+            window_mode: 0,
             vm_ui_prio: HashMap::new(),
             vm_ui_allowed_prev: false,
             game_dir: std::path::PathBuf::new(),
@@ -2643,5 +2813,37 @@ mod subui_tests {
         core.frame_clicked = true;
         assert_eq!(core.poll_title_menu(), None);
         assert_eq!(core.subui, SubUi::None);
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    //! 布局修复回归(layout-fix-plan P2-5):状态件可见性规则 + 主行定义。
+
+    use super::*;
+
+    #[test]
+    fn vm_ui_filter_hides_state_families() {
+        // 状态件家族:仅悬停/激活时显示 → 默认隐藏(P2-1)
+        assert!(!vm_ui_layer_allowed("cgsys/main/pop/tip_config", true));
+        assert!(!vm_ui_layer_allowed("cgsys/main/autoskipicon/icon_01", true));
+        assert!(!vm_ui_layer_allowed("cgsys/main/skipicon/icon_01", true));
+        assert!(!vm_ui_layer_allowed("cgsys/main/count/icon_02", true));
+        // 常显件与存档目录不受影响
+        assert!(vm_ui_layer_allowed("cgsys/main/button/type1/btn_auto_bt4", true));
+        assert!(vm_ui_layer_allowed("cgsys/saveload/back_load", true));
+        // 标题等待期整体关闭
+        assert!(!vm_ui_layer_allowed("cgsys/main/button/type1/btn_auto_bt4", false));
+    }
+
+    #[test]
+    fn adv_row_defs_are_on_screen() {
+        assert_eq!(ADV_BUTTONS.len(), 12, "参考图主行 = 10 底行 + home/power");
+        for &(_, x, y, w, h, _, segs) in ADV_BUTTONS {
+            assert!(segs >= 3, "至少 off/on/over 三态");
+            assert!(x >= 0.0 && y >= 0.0);
+            assert!(x + w as f32 <= LOGICAL_W, "x+ w 越界");
+            assert!(y + h as f32 <= LOGICAL_H, "y + h 越界");
+        }
     }
 }
