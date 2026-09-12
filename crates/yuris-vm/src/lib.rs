@@ -1900,6 +1900,8 @@ impl GroupVm {
                     let mut op_slot: Option<(u8, Value)> = None;
                     let mut evaluated: Vec<(u8, String)> = Vec::new();
                     let mut pending: Vec<(u8, yuris_format::ystb::CommandSlot)> = Vec::new();
+                    // 操作槽求值全量保留(SEARCH 需要 key/起始下标等参数值)
+                    let mut slot_vals: Vec<(u8, Value)> = Vec::new();
                     for w in &windows {
                         if w.len == 0 {
                             continue;
@@ -1916,6 +1918,7 @@ impl GroupVm {
                                     op_slot = Some((slot, v.clone()));
                                 }
                                 evaluated.push((slot, value_summary(&v)));
+                                slot_vals.push((slot, v));
                             }
                         }
                     }
@@ -1934,7 +1937,9 @@ impl GroupVm {
                     }
                     // 执行查询(未实现/结构异常 → strict 挂起 / trace 记录后跳过)
                     let query = op_slot.as_ref().map(|(s, _)| *s);
-                    let result = match self.exec_varinfo_query(query, set_target.as_ref(), &mut evaluated) {
+                    let result = match self
+                        .exec_varinfo_query(query, set_target.as_ref(), &slot_vals, &mut evaluated)
+                    {
                         Ok(r) => r,
                         Err(e) => {
                             if let Some(reason) =
@@ -3374,6 +3379,65 @@ impl GroupVm {
         self.store.get(&lval.var).cloned().ok()
     }
 
+    /// 以给定帧局部实参**直接调用**一个标签(内部构造 GOSUB 帧)。
+    ///
+    /// 用途:scenario→VM 桥的地基 + 取证工具 —— 让引擎自己的桥宏
+    /// (如 `ES.SCR.T1`)以样本参数运行,产出真实 CG 坐标(成果 87 §3)。
+    /// - `ints`:(槽号, 值)→ 帧局部 INT `@53[槽]`
+    /// - `strs`:(槽号, 值)→ 帧局部 STR `$55[槽]`
+    ///
+    /// 返回后帧的 `return_pc` = `usize::MAX`(不可达标记):调用方以
+    /// **帧深回落**判定调用结束,勿在返回后继续 run(取证语义)。
+    pub fn push_guest_call(
+        &mut self,
+        label: &str,
+        ints: &[(u32, i64)],
+        strs: &[(u32, &[u8])],
+    ) -> Result<()> {
+        let key = label.as_bytes().to_vec();
+        let Some(&(target, target_script)) = self.labels.get(&key) else {
+            return Err(Error::format(format!("标签不存在: {label}")));
+        };
+        let mut locals = VariableStore::new();
+        let max_i = ints.iter().map(|(s, _)| *s).max().unwrap_or(0);
+        let max_s = strs.iter().map(|(s, _)| *s).max().unwrap_or(0);
+        if max_i > 0 {
+            let r = yuris_value::VarRef {
+                space: yuris_value::VarSpace::At,
+                id: 53,
+            };
+            locals.declare_array(&r, yuris_value::ElemType::Int, &[max_i + 1]);
+            for (slot, v) in ints {
+                locals.set_elem(&r, &[*slot as i64], Value::Int(*v))?;
+            }
+        }
+        if max_s > 0 {
+            let r = yuris_value::VarRef {
+                space: yuris_value::VarSpace::Dollar,
+                id: 55,
+            };
+            locals.declare_array(&r, yuris_value::ElemType::Str, &[max_s + 1]);
+            for (slot, v) in strs {
+                locals.set_elem(&r, &[*slot as i64], Value::Str(v.to_vec()))?;
+            }
+        }
+        let from = self.pc;
+        let from_script = self.ctx.script_id;
+        self.frames.push(GosubFrame {
+            return_pc: usize::MAX,
+            script_id: from_script,
+            locals,
+            if_nest_depth: self.if_nest.len(),
+            loop_depth: self.loops.len(),
+        });
+        if target_script != from_script {
+            self.switch_script(target_script, target as usize)?;
+        } else {
+            self.pc = target as usize;
+        }
+        Ok(())
+    }
+
     /// GOSUB 帧局部初始化(P5 定性,成果 50):实参按 B0 槽号写入帧局部数组
     /// (INT=@53 / FLT=@54 / STR=$55,槽=B0-类型基,见函数内注释)。
     /// 引擎:实参从参数槽表写入帧内 int/flt/str 区,读经 sysvar switch
@@ -4142,6 +4206,7 @@ impl GroupVm {
         &mut self,
         query: Option<u8>,
         set_target: Option<&VarTarget>,
+        slot_vals: &[(u8, Value)],
         evaluated: &mut Vec<(u8, String)>,
     ) -> Result<Option<Value>> {
         let Some(target) = set_target else {
@@ -4231,8 +4296,58 @@ impl GroupVm {
                     )),
                 }
             }
+            Some(14) => {
+                // SEARCH(引擎 CMDH_004550a0 ae 支):在 SET 数组元素中从
+                // NO(20) 起线性查找 key(INT=17 / FLT=18 / STR=19),返回首个
+                // 匹配下标(0 基);未命中返回扫描边界(元素个数)。
+                // 等级:Likely(分支汇编逐行,参数槽号取自 YSCM 参数名)。
+                let key = slot_vals
+                    .iter()
+                    .find(|(s, _)| *s == 17 || *s == 18 || *s == 19)
+                    .map(|(_, v)| v.clone());
+                let start = slot_vals
+                    .iter()
+                    .find(|(s, _)| *s == 20)
+                    .and_then(|(_, v)| match v {
+                        Value::Int(n) => Some((*n).max(0) as usize),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                let (r, count) = match target {
+                    VarTarget::Scalar(r) | VarTarget::Indexed(r, _) => (
+                        r,
+                        self.store
+                            .array_dims(r)
+                            .and_then(|d| d.first().copied())
+                            .map(|n| n as usize)
+                            .unwrap_or(0),
+                    ),
+                };
+                let mut found = count;
+                if let Some(key) = key {
+                    for i in start..count {
+                        let Ok(v) = self.store.get_elem(r, &[i as i64]) else {
+                            break;
+                        };
+                        let hit = match (&v, &key) {
+                            (Value::Int(a), Value::Int(b)) => a == b,
+                            (Value::Float(a), Value::Float(b)) => a == b,
+                            (Value::Int(a), Value::Float(b)) => (*a as f64) == *b,
+                            (Value::Float(a), Value::Int(b)) => *a == (*b as f64),
+                            (Value::Str(a), Value::Str(b)) => a == b,
+                            _ => false,
+                        };
+                        if hit {
+                            found = i;
+                            break;
+                        }
+                    }
+                }
+                evaluated.push((14u8, format!("SEARCH={found}(n={count})")));
+                Ok(Some(Value::Int(found as i64)))
+            }
             Some(slot) => Err(Error::format(format!(
-                "VARINFO 查询槽 {slot}(SEARCH/STRFIRST/SJISCODE)未实现(不猜)"
+                "VARINFO 查询槽 {slot}(STRFIRST/SJISCODE)未实现(不猜)"
             ))),
         }
     }

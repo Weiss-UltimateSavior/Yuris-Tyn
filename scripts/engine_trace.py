@@ -259,6 +259,7 @@ class Tracer:
         self.no_rearm = set()      # 一次性断点(布防点)
         self.bp_log_addr = None    # 任意执行断点(寄存器日志)
         self.bp_log_ev = None      # 仅在该事件序号区间记录
+        self.bp_dumps = []         # [(base, off, len)] 日志断点命中时附带内存转储(base=VA 或 "esp")
 
     # ---- 进程内存 ----
     def read_mem(self, pid, addr, n):
@@ -609,6 +610,27 @@ class Tracer:
                                           f"Edx={ctx.Edx:#010x} Ebx={ctx.Ebx:#010x} "
                                           f"Esi={ctx.Esi:#010x} Edi={ctx.Edi:#010x} "
                                           f"Ebp={ctx.Ebp:#010x}")
+                                dumps = []
+                                for base, off, dlen in self.bp_dumps:
+                                    if base == "esp" and ctx is not None:
+                                        dump_va = (ctx.Esp + off) & 0xFFFFFFFF
+                                    else:
+                                        dump_va = int(base, 16) + off + reloc
+                                    raw = self.read_mem(pid, dump_va, dlen)
+                                    dumps.append({
+                                        "addr": hex(dump_va),
+                                        "len": dlen,
+                                        "hex": raw.hex() if raw else None,
+                                    })
+                                self.emit({
+                                    "ev": "bplog",
+                                    "script": sc, "pc": pc,
+                                    "hit": hex(hit_va),
+                                    "eax": hex(ctx.Eax) if ctx else None,
+                                    "edx": hex(ctx.Edx) if ctx else None,
+                                    "esp": hex(ctx.Esp) if ctx else None,
+                                    "dumps": dumps,
+                                })
                         if (self.watch_spec and self.watch_addr
                                 and self.n_events % 500 == 0):
                             self.recheck_watch(pid)
@@ -757,6 +779,8 @@ def main():
                     help="任意执行断点:记录命中时寄存器")
     ap.add_argument("--bp-log-ev", metavar="N", type=int,
                     help="仅在第 N 个事件时记录(缺省=全部)")
+    ap.add_argument("--bp-dump", metavar="ADDR:LEN", action="append",
+                    help="日志断点命中时转储内存(ADDR:LEN,可多次;ADDR 支持 esp+OFF)")
     a = ap.parse_args()
 
     with open(a.config, "r", encoding="utf-8") as f:
@@ -773,6 +797,16 @@ def main():
     if a.bp_log:
         t.bp_log_addr = int(a.bp_log, 16)
         t.bp_log_ev = a.bp_log_ev
+    for spec in a.bp_dump or []:
+        daddr, dlen = spec.split(":")
+        dlen = int(dlen, 16) if dlen.lower().startswith("0x") else int(dlen, 10)
+        if daddr.startswith("esp"):
+            off = 0
+            if "+" in daddr:
+                off = int(daddr.split("+", 1)[1], 16)
+            t.bp_dumps.append(("esp", off, dlen))
+        else:
+            t.bp_dumps.append((daddr, 0, dlen))
     t.run(a.exe, cwd)
     print(f"[trace] 完成 reason={t.stop_reason} events={t.n_events} -> {a.out}")
     return 0

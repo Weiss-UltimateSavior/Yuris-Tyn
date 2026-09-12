@@ -901,22 +901,66 @@ fn varinfo_length_readonly_query() {
     );
 }
 
-/// VARINFO 未实现查询槽(SEARCH B0=14):strict 下 Error 挂起(不猜)。
+/// VARINFO SEARCH(槽 14;引擎 CMDH_004550a0 ae 支,成果 88 实装):
+/// 在 SET 数组元素中从 NO(20) 起线性查找 key(INT=17/FLT=18/STR=19),
+/// 返回首个匹配下标(0 基);未命中返回元素个数。
 #[test]
-fn varinfo_writeback_halts_strict() {
+fn varinfo_search_returns_index() {
+    use yuris_value::{ElemType, VarRef, VarSpace, Value};
+    let key = [0x2b, 0x90, 0x4f, 0x93];
+    // SET 窗(B0=0):pushvarref @10000; pushint 0; aload → 数组元素引用
+    let w_set: &[u8] = &[
+        0x56, 3, 0, 0x40, 0x10, 0x27, 0x42, 1, 0, 0, 0x29, 1, 0, 0,
+    ];
+    // LET 窗(B0=1):pushvar @6000 → 写回目标
+    let w_let: &[u8] = &[0x48, 3, 0, 0x40, 0x70, 0x17];
+    // SEARCH(14)=1 / key(17)=30 / start(20)=2
+    let w_search: &[u8] = &[0x42, 1, 0, 1];
+    let w_key: &[u8] = &[0x42, 1, 0, 30];
+    let w_start: &[u8] = &[0x42, 1, 0, 2];
+    let groups: &[(u8, u8, u16)] = &[(cmd::VARINFO, 5, 0), (cmd::RETURN, 0, 0)];
+    let windows = &[
+        ([0x00, 0x00, 0x00, 0x00], w_set.len() as u32, 0, w_set),
+        ([0x0e, 0x00, 0x00, 0x00], w_search.len() as u32, 0, w_search), // B0=14
+        ([0x11, 0x00, 0x00, 0x00], w_key.len() as u32, 0, w_key),       // B0=17
+        ([0x14, 0x00, 0x00, 0x00], w_start.len() as u32, 0, w_start),   // B0=20
+        ([0x01, 0x00, 0x00, 0x00], w_let.len() as u32, 0, w_let),
+    ];
+    let bytes = make_ystb(key, groups, windows);
+    let script = YstbFile::from_bytes(&bytes, key).unwrap();
+    let mut vm = GroupVm::load(script).unwrap();
+    let r = VarRef { space: VarSpace::At, id: 10000 };
+    vm.store_mut().declare_array(&r, ElemType::Int, &[6]);
+    for i in 0..6i64 {
+        vm.store_mut()
+            .set_elem(&r, &[i], Value::Int(i * 10))
+            .unwrap();
+    }
+    let s = vm.run(100).unwrap();
+    assert_eq!(s, VmSuspend::Complete);
+    // key=30 从下标 2 起 → 命中下标 3
+    assert_eq!(
+        vm.store().get(&VarRef { space: VarSpace::At, id: 6000 }).unwrap(),
+        &Value::Int(3)
+    );
+}
+
+/// VARINFO STRFIRST/SJISCODE(槽 15/16)仍未知:strict 下 Error 挂起(不猜)。
+#[test]
+fn varinfo_strfirst_halts_strict() {
     let key = [0x2b, 0x90, 0x4f, 0x93];
     let w_set: &[u8] = &[0x48, 3, 0, 0x40, 0x10, 0x27]; // pushvar @10000
-    let w_search: &[u8] = &[0x42, 1, 0, 1]; // SEARCH 启用
+    let w_op: &[u8] = &[0x42, 1, 0, 1]; // 启用
     let groups: &[(u8, u8, u16)] = &[(cmd::VARINFO, 2, 0)];
     let windows = &[
         ([0x00, 0x00, 0x00, 0x00], w_set.len() as u32, 0, w_set),
-        ([0x0e, 0x00, 0x00, 0x00], w_search.len() as u32, 0, w_search), // B0=14 LE
+        ([0x0f, 0x00, 0x00, 0x00], w_op.len() as u32, 0, w_op), // B0=15 STRFIRST
     ];
     let bytes = make_ystb(key, groups, windows);
     let script = YstbFile::from_bytes(&bytes, key).unwrap();
     let mut vm = GroupVm::load(script).unwrap();
     let s = vm.run(100).unwrap();
-    assert!(matches!(s, VmSuspend::Error(ref m) if m.contains("14")));
+    assert!(matches!(s, VmSuspend::Error(ref m) if m.contains("15")));
 }
 
 /// 真实样本:脚本190 的 0x67(VARINFO, LENGTH)组可执行,无 Unsupported 挂起。

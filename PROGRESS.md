@@ -3635,6 +3635,10 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
    命令名/修饰符分离模型下 name="BG"/mod="CMXYZ",旧的
    `name=="CMXYZ"` 分支永不命中 → 相机行被当换背景(ui.log 曾见
    `BG "0" 解析=纯色`)。
+   **P1 实机勘误**:首版「原生 1:1 + 自由平移」在 2400×1200 上越界,
+   实机截图右侧/底部黑带 → 改 **cover 缩放 + 平移钳制**(不拉伸、
+   不露黑边);参考图复核为宣发合成图(背景有缩放裁位、UI 1:1),
+   不用于 bg 标定;方向/倍率保持 Likely 待实机对拍。
 4. **游戏内 UI 缺主行 + 状态件常显**(Confirmed 代码/Likely 机制):
    主行(LOG/AUTO/SKIP/SAVE/LOAD/Q.SAVE/Q.LOAD/音量/齿轮/PIN
    MENU/home/power)由 `es.BT.W0/W1` 管理,触发链含 scenario 宏
@@ -3649,8 +3653,8 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
   m_066)+ `pick_stand_key`(纯函数,与遍历顺序无关)+
   `read_entry_key_bytes`(原始键直读,非 UTF-8 名安全)。
 - `player-core`: `show_tachie` 锚点改顶边(`py = y`,x 仍中心偏移);
-  `show_bg` 原生尺寸 + 居中 + `bg_cam`(`x=(1920-iw)/2-cam.x`);
-  `bg_camera` 同步已上屏 BG 层;`vm_ui_layer_allowed` 新增 deny 四家族
+  `show_bg` 原生比例 + cover 缩放 + 相机平移钳制(`bg_cover_transform`,
+  不拉伸不露黑边);`bg_camera` 同步已上屏 BG 层;`vm_ui_layer_allowed` 新增 deny 四家族
   (pop/autoskipicon/skipicon/count);`ADV_BUTTONS` 12 钮(参考图模板
   匹配标定,corr 0.73~0.99)+ `build_adv_row`/`update_adv_buttons`/
   `adv_button_hit`(点击消费,动作路由 P9.2 待实装);`\WINDOWMODE`
@@ -3663,13 +3667,16 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
 - `cargo test -p yuris-vm`(新增 `pick_stand_key_prefers_m050_regardless_of_order`/
   `pick_stand_key_fallbacks_and_filters`);
 - `cargo test -p yuris-player-core`(新增 `camera_tests` 2 +
-  `layout_tests` 2:状态件过滤/主行定义屏内);
-- `cargo test --workspace` **157 全绿**(49 套件);`cargo build --release
+  `layout_tests` 3:状态件过滤/主行定义屏内/bg cover 无黑边钳制);
+- `cargo test --workspace` **158 全绿**(49 套件);`cargo build --release
   -p yuris-cli` 通过;
 - `cargo run -p yuris-vm --example tmp_tachie_probe -- <游戏目录>
   L_NYA_1A0100 M_LOP_1A0100 K_PEN_1A0100 A_HAN_1A0100 V_YAG_1A0100`
   → 全部确定性命中 m_050(358×628 / 427×579 / 377×438 / 1157×2076 /
   857×2315);
+- 实跑冒烟(`--at maho2_01`,15s):日志
+  `BG.CMXYZ(507,296,-10)` + `BG "bg52" 2400x1200 → (-240.0,0.0) s=0.900`
+  (cover 0.9 + 平移钳制,无黑边);无 panic/渲染失败;
 - **实机(待用户)**:按 `docs/layout-fix-plan.md` 验收标准逐项核对
   (立绘比例/不切头;背景不拉伸、相机平移方向;主行 12 钮位置与
   参考图一致;药丸堆叠/页码标签消失;标题无残留)。
@@ -3687,6 +3694,248 @@ YSTB 解密 → 池内 sse 扫描 → 命令组归属转储;`tmp_sse_count.rs` �
 - `docs/layout-fix-plan.md`(计划 + 参考图标定表);
 - 成果 82 勘误 7/8 已补记于上一条(计划文档 `in-game-ui-plan.md` §3.1
   为其原始记录)。
+
+***
+
+## 2026-09-12 晚 原版实机截图逐像素对拍:背景/立绘标定 + `\T` 位移动画(成果 84)
+
+### 成果 84:引擎显示模型实测 —— **Confirmed(单场景测量)/Likely(模型泛化)**
+
+**取证**:用户提供同场景双图(本实现 1537×591 / 原版引擎 1536×904)。
+原版内容区 = 1409×793(精确 16:9 → 1920×1080 逻辑标定,k=0.7339)。
+方法:模板匹配(立绘/UI)+ 纹理周期法(百叶窗)+ 全图掩码 NCC。
+
+**实测结论**:
+
+1. **背景**(Confirmed,全图 NCC **corr 0.908**):引擎
+   `scale = 1.25`(逻辑 px / 素材 px)→ 可见素材区 1536×864;
+   区域中心 = 图中心 + **`cam × 0.5`**(实测比 0.517/0.568);
+   cam(507,296) 实测可见区左上 (694,336) ↔ 模型 (685.5,316,差≤1.9%)。
+   z 未定性(仅记录)。旧 cover 模型(S=0.9)取景偏小。
+2. **立绘比例**(Confirmed):**0.93 × m_050 原生**(k_pen/l_nya/m_lop
+   实测 0.930/0.930/0.929,corr 0.97~0.99);旧 1.0 偏大 ~7%。
+3. **`\T` 8 参 = 位移动画**:`(name, ms, x1,y1,z1, x2,y2,z2)`;
+   大量空名 `\T(,ms)` 为节拍等待。引擎「浮动」感 = 连续位移补间
+   (实机动画期位置与静止目标有偏差)。
+4. **遗留**(下轮):静止锚点的精确对拍(动画完成帧)、缓动曲线
+   (线性近似)、UI 行/立绘在动画期的相对关系。
+
+**实现**:
+
+- `bg_cover_transform` 重写为引擎模型(1.25 / 中心+cam·0.5 / 钳制);
+- `TACHIE_SCALE = 0.93`(show_tachie 锚点同步按缩放宽);
+- `move_tachie` + `update_sprite_moves`(`\T` 8 参线性补间;
+  scenario 8 参路由;默认 trait 近似落终点,测试桩零改动);
+- 读档/场景重置清理 `sprite_moves`。
+
+**验证(可复现)**:
+
+- `cargo test --workspace` **159 全绿**(新增 `\T` 8 参路由 +
+  引擎背景模型断言);
+- `cargo build --release -p yuris-cli` 通过;
+- 冒烟(`--at maho2_01`):`BG "bg52" 2400x1200 → (-856.9,-395.0) s=1.250`
+  (= 模型 cam(507,296) 值);
+- **实机(待用户)**:与原版同场景再对拍一张(建议等一小段让位移动画
+  停稳)——背景取景、立绘大小、滑动效果三项逐项比对。
+
+### 关联
+
+- `docs/layout-fix-plan.md` P0/P1 已按本成果更新(旧 cover 模型勘误链);
+- 上一条成果 83 的 bg 模型被本成果取代(留痕不删)。
+
+***
+
+## 2026-09-12 深夜 立绘分层合成侦查 + 别名根过滤(成果 85)
+
+### 成果 85:`cgsys_c` 别名根 + 立绘「基图+部件」模型 —— **Confirmed(素材/实机截图)/Likely(处理近似)**
+
+**取证**(第二轮实机截图 vs 原版,同场景 16:9 精确对拍):
+
+1. **别名根 `cgsys_c` 绕过 UI 过滤**(Confirmed):实机右上仍现蓝色
+   AUTO 药丸;素材 `cgsys\main\autoicon\icon_01.png`(3020 B)存在,
+   且引擎存在 `cgsys_c\...` 别名根(known-issues 2.4)。旧
+   `vm_ui_layer_allowed` 只 deny `cgsys\main\{pop,autoskipicon,skipicon,
+   count}`,别名路径不命中 → 修复:路径归一 `cgsys_c→cgsys` + 新增
+   `main\autoicon\` deny。
+2. **立绘变体 = 基图 + 部件**(Confirmed):`L_NYA_1A0200` m_050 仅
+   7490 B(小部件),`L_NYA_1A0100` 188321 B(全身基图);原版截图该
+   时刻 = 全身猫 **移动到 x=0**(引擎保留基图 + 合成部件);本实现旧
+   逻辑按全名建新层 → 角色叠双层且不随变体移动。修复:立绘层 id 改
+   **角色键**(名前两段,`L_NYA_1A0100`/`L_NYA_1A0200` 同层);新图
+   像素 < 当前基图一半 → 视为部件,**保留基图并同步位置**(部件偏移
+   表未取证,暂不合成贴图)。
+3. **静止锚点对拍**(Confirmed,部分):背景模型与引擎一致后再测,
+   本实现 `K_PEN` left 519/top 120 vs 脚本公式 515/114(±5px,一致);
+   原版同帧 `K_PEN` left 232/top 217 与脚本目标不符 → 引擎处于
+   **位移动画/浮动中**(非静止),静止锚点与浮动参数需连续帧取证。
+4. **消息窗名字**:原版把「咪姆」显示在独立名牌,本样本 LT 原文
+   含【咪姆】前缀 → 文本层是否剥离待对拍(观察项)。
+
+**验证(可复现)**:
+
+- `cargo test --workspace` **161 全绿**(新增 `vm_ui_filter_normalizes_alias_root`/
+  `tachie_char_key_groups_variants`);
+- `cargo build --release -p yuris-cli` 通过;冒烟
+  `BG "bg52" → (-856.9,-395.0) s=1.250` 不变;
+- **实机(待用户)**:右上 AUTO 药丸消失;立绘变体不再叠层、随位置
+  移动;浮动效果比对需要原版**连续两帧/短录屏**。
+
+### 关联
+
+- 成果 84(背景/比例标定);`docs/layout-fix-plan.md` P0 勘误补注;
+- P3 待办扩充:立绘部件偏移表(基图+部件合成)、浮动轨迹参数。
+
+***
+
+## 2026-09-12 深夜2 立绘循环浮动实装(成果 86,测试 162)
+
+### 成果 86:三玩偶持续上下浮动 —— **Confirmed(表现/x 仅纵向)/Likely(幅度周期参数)**
+
+**取证**(用户提供原版**三帧连拍**,内容区 1411×793 精确 16:9;
+沿用成果 84 的 1920 逻辑标定与模板匹配):
+
+- **浮动仅 y 轴**:三角色帧间 x 位移 ≤1 内容 px;
+- 顶缘逻辑值:k_pen {217, 242.5, 252, 256}(含成果 84 截图),
+  摆幅 **≥39**;l_nya {180, 182.6, 203, 205.8},摆幅 ≥26;
+  m_lop 样本不稳(匹配度低,兔身部分被窗口裁切);
+- 三帧相位不同步(企鹅上浮时猫下沉)→ **逐角色独立相位**;
+- 周期无计时证据(帧间隔未知),静图不可测。
+
+**实现**:
+
+- `TACHIE_FLOAT_AMP = 18`(逻辑 px)、`TACHIE_FLOAT_PERIOD = 2.8s`、
+  相位按层 id 稳定派生(`tachie_float_phase`);
+- `tachie_float`(id → 相位 + 基准)+ `float_clock`;
+  `show_tachie`/`move_tachie` 维护基准,`update_sprite_moves` 每帧在
+  位移补间后叠加正弦偏移;`\S` 精灵不参与(仅立绘);
+- hide/reset/读档三处清理浮动表。
+
+**验证**:
+
+- 单测 `tachie_float_is_bounded_and_periodic`(幅度有界/周期回归/相位差);
+- `cargo test --workspace` **162 全绿**;release 构建 + 冒烟无 panic;
+- **实机(待用户)**:三玩偶持续上下浮动;若幅度/周期观感不符,
+  给一段原版录屏(或报「每 N 秒一个来回」)即可精确标定
+  (UNVERIFIED 参数仅两处常量)。
+
+### 关联
+
+- `docs/layout-fix-plan.md` P0(浮动实装 + UNVERIFIED 参数);
+  成果 84/85(背景、比例、部件分层)。
+
+***
+
+## 2026-09-12 深夜3 渲染各向同性证明 + 立绘布局链定位(成果 87)
+
+### 成果 87:窗口缩放不拉伸(证明)+ `\T` 布局在 es.SP.* 桥内 —— **Confirmed(渲染)/Confirmed(调用链)/Unknown(最终映射)**
+
+**用户报告**:①三玩偶错位;②拉伸窗口素材拉伸错位。
+
+1. **缩放不拉伸(Confirmed,单测)**:`logical_to_ndc` 抽为纯函数
+   `letterbox_matrix(w,h)` + 2 项单测:
+   - 16:9/4:3/竖窗的边角映射(信箱黑边正确);
+   - **像素空间各向同性**:任意窗口比例下,逻辑 (dx,0) 与 (0,dy)
+     的像素缩放幅度相等(即素材不被拉伸)。
+   → 残留「拉伸」若是真机现象,应为 macOS live-resize 合成期瞬态
+   (拖拽中 OS 缩放旧帧,松手后我们的下一帧即恢复),需用户复查/截图。
+2. **立绘错位根因方向(Confirmed 调用链)**:`\T` 是 scenario 宏,
+   展开体 = `ES.SCR.T1`(script 231 pc 59):把参数存入 @0x1b13..19,
+   经 `ES.SCR.IDCHECK` 后依次调用 `es.SP.ST.SET`(s184 pc19)、
+   `es.SP.SET.SET`(s177 pc994)、`es.SP.XYZ.SET`(s184 pc582)。
+   原始 x/y 是**该参数栈的输入**,最终屏幕映射在其下游(Unknown)。
+   实测引擎三角色 left = 232/794/1254(cat x=0 ↔ 中心公式吻合,
+   企鹅/兔子与 `960+x` 相差 -283/-384)→ 非字面直译模型,当前
+   `960+x-w·0.93/2` 仅为占位。
+3. **下一步(可执行)**:给 `GroupVm` 增 `push_guest_call(label,args)`
+   (scenario→VM 桥的地基),用取证 example 以样本参数调用
+   `ES.SCR.T1` 并 dump `cg_registry_snapshot` → 直接得引擎自己的
+   屏幕坐标,替换占位模型。等级:实现路径 Confirmed,结果待跑。
+
+**验证**:`cargo test --workspace` **164 全绿**(49 套件,新增渲染 2);
+`cargo build --release -p yuris-cli` 通过。
+
+### 关联
+
+- `docs/layout-fix-plan.md` P0 勘误(占位模型标注 + 下一步);
+- 成果 84/85/86(背景、比例、部件、浮动)。
+
+***
+
+## 2026-09-13 凌晨 桥宏取证工具 + VARINFO SEARCH(成果 88,测试 165)
+
+### 成果 88:`push_guest_call` 桥地基 + VARINFO SEARCH 实装 + 立绘布局取证结论 —— **Confirmed(工程)/Unknown(引擎布局映射)**
+
+**用户报告**:三玩偶仍错位(附双图:本实现 vs 原版同场景)。
+
+1. **渲染不拉伸终证(前条成果 87 复述)**:`letterbox_matrix` 单测证明
+   各向同性 → 拖拽中的「拉伸」为 macOS live-resize 合成瞬态;松手后
+   内容按 letterbox 恢复。
+2. **桥宏取证工具落地(P0 成果 87 §3 的下一步)**:
+   - `GroupVm::push_guest_call(label, ints, strs)`:按帧局部槽号直接
+     调用引擎桥宏(压 GOSUB 帧 + 跨脚本切换);scenario→VM 桥地基。
+   - `VARINFO SEARCH(槽 14)` 实装(引擎 CMDH_004550a0 **ae 支**逐行:
+     SET 数组自 NO(20) 起线性查找 key(INT=17/FLT=18/STR=19),返回首个
+     匹配下标,未命中返回元素个数;STRFIRST/SJISCODE 仍 Unknown 挂起)。
+   - `crates/yuris-vm/examples/tmp_st_layout.rs`:以样本 `\T` 参数调用
+     `ES.SCR.T1`(script 231 pc 59)并 dump CG 注册表。
+3. **取证结论(重要)**:桥宏整条链可跑(SEARCH 修复后执行 69 万组),
+   但**不产生任何 CG 注册**(仅写 @0x1bXX/es.SP.* 状态)→ 立绘屏幕
+   坐标在**引擎原生 tachie 渲染器**内计算,不在脚本侧。`960+x` 占位
+   模型维持;下一步须从引擎二进制反编译布局函数(r2/Ghidra 在手)。
+   实测锚点:同状态(脚本 x=-270/0/876)引擎屏幕 left=232/794/1254
+   (中心 407/960/1452),本实现 515/794/1638 —— 差异非 float(横向)。
+
+**验证**:`cargo test --workspace` **165 全绿**;release 构建通过;
+`tmp_st_layout` 可复现桥宏调用链。
+
+### 关联
+
+- `docs/layout-fix-plan.md` P0 勘误;成果 87(调用链定位);
+- 未决:引擎 tachie 布局函数反编译(下一步)、\(\T\) 伴生
+  `\S.CLXYZ` 等修改器语义。
+
+***
+
+## 2026-09-13 凌晨2 tachie 布局链反编译（r2）：布局在 es.SP.*，非原生函数（成果 89）
+
+### 成果 89:引擎 tachie 坐标换算定位 —— 脚本侧 es.SP 系统 + 定点投影；原生无独立布局函数 —— **Confirmed(调用链/脚本 CG 实证)/Unknown(最终公式)**
+
+**方法**:radare2 6.1.8 反汇编 `kemonomichi2.exe`(PE32, 基址 0x400000);
+`FUN_0046305c` 提取命令处理器表(95 项,cmd=index-8);
+以 0x15xx/0x1bxx 立即数为锚扫描原生侧;逐脚本 dump CG/CGACT 命令归属。
+
+**结论**:
+
+1. **命令处理器表**(Confirmed):`0x78b020` 起,cmd 0=0x43c71c、
+   cmd 1(CG)=0x423080、cmd 2(CGACT)=0x43c984、…(95 项)。
+   原生侧**没有任何读取 @0x15xx/@0x1bxx tachie 状态数组的代码**
+   (立即数全扫 0x1558–0x1575:0 处真实命中;唯一 0x15xx 比较是
+   0x462f50 的字符映射表,与本链路无关)。
+2. **布局在脚本侧**(Confirmed):scenario 宏 `T` → `ES.SCR.T1`
+   (s231 pc59,存 @0x1b13..19)→ `es.SP.ST.SET`/`XYZ.SET`(s184)
+   → 每帧 `es.SP.DRAW`(s180 pc0)→ `es.SP.XYZCALC`
+   (s177 pc1510,定点常量 **100,000,000** = 1e8,乘加+除法投影;
+   相机/角色状态数组 @0x14xx,@0x15xx;屏幕配置 @0x0460/@0x0470)
+   → **CG/CGACT 命令**(s177 组 1811–1842、s180 组 285–344 实证:
+   `CG x=@0x0460/2-@0x17d8/2` 等,即脚本内算屏幕坐标后下发)。
+3. **黑盒探测受阻**(Unknown):`push_guest_call("es.SP.XYZCALC", …)`
+   可调用但输出恒 0 —— 输入依赖槽状态数组(@0x14xx)与原生启动
+   填充的配置(@0x0460 在 boot 后为 0),且宏调用约定(ScenarioMacro
+   参数表 yst00065–69)仍未复刻;`ES.SCR.T1` 直呼会走错分支
+   (产生 4469 条 ES.CONFIG CG 登记而非 tachie)。
+4. 实测锚点(成果 84/87 复述):同状态引擎 left=232/794/1254,
+   本实现占位模型 515/794/1638 —— 差异非浮动、非缩放,是布局公式。
+
+**下一步(候选)**:
+- (A) 解码 `es.SP.XYZCALC`(s177 pc1510)字节码数学 + `es.SP.ST.SET`
+  槽语义(直接得公式);
+- (B) 解码 scenario 宏参数表(yst00065–69 SetParam)复刻引擎调用,
+  跑通黑盒;
+- (C) 多场景原版截图(2/4+ 角色)拟合经验槽位模型。
+
+**验证**:`cargo test --workspace` 165 全绿;`cargo check --examples` 通过;
+工具:`crates/yuris-vm/examples/tmp_st_layout.rs`(桥宏调用)、
+`tmp_xyzcalc.rs`(XYZCALC 黑盒探针)、r2 命令见本文。
 
 ***
 

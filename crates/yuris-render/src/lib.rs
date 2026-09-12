@@ -304,19 +304,76 @@ impl WgpuBackend {
     /// 引擎 1920×1080 逻辑区等比缩放到视口并居中(信箱留黑边)。
     fn logical_to_ndc(&self) -> [[f32; 4]; 4] {
         let (w, h) = self.surface_size;
-        let (w, h) = (w as f32, h as f32);
-        let scale = (w / LOGICAL_W).min(h / LOGICAL_H);
-        let sx = 2.0 * scale / w;
-        let sy = 2.0 * scale / h;
-        let off_x = -1.0 + (w - LOGICAL_W * scale) / w;
-        let off_y = -1.0 + (h - LOGICAL_H * scale) / h;
-        // 列主序;Y 翻转(逻辑 Y 向下,NDC Y 向上)
-        [
-            [sx, 0.0, 0.0, 0.0],
-            [0.0, -sy, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [off_x, -off_y, 0.0, 1.0],
-        ]
+        letterbox_matrix(w as f32, h as f32)
+    }
+}
+
+/// 逻辑坐标(1920×1080)→ NDC 的 letterbox 映射矩阵(列主序;纯函数可单测)。
+///
+/// **各向同性**:像素空间缩放因子对 x/y 相同(`scale = min(w/1920, h/1080)`),
+/// 窗口任意改比例只会改变信箱黑边,不会拉伸素材(实机「拉伸」排查锚点)。
+pub fn letterbox_matrix(w: f32, h: f32) -> [[f32; 4]; 4] {
+    let scale = (w / LOGICAL_W).min(h / LOGICAL_H);
+    let sx = 2.0 * scale / w;
+    let sy = 2.0 * scale / h;
+    let off_x = -1.0 + (w - LOGICAL_W * scale) / w;
+    let off_y = -1.0 + (h - LOGICAL_H * scale) / h;
+    // 列主序;Y 翻转(逻辑 Y 向下,NDC Y 向上)
+    [
+        [sx, 0.0, 0.0, 0.0],
+        [0.0, -sy, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [off_x, -off_y, 0.0, 1.0],
+    ]
+}
+
+#[cfg(test)]
+mod letterbox_tests {
+    use super::*;
+
+    /// 应用列主序矩阵到 (x,y)。
+    fn apply(m: &[[f32; 4]; 4], x: f32, y: f32) -> (f32, f32) {
+        (
+            m[0][0] * x + m[3][0],
+            m[1][1] * y + m[3][1],
+        )
+    }
+
+    #[test]
+    fn exact_fit_and_offsets() {
+        // 16:9 精确匹配
+        let m = letterbox_matrix(2560.0, 1440.0);
+        assert!((apply(&m, 0.0, 0.0).0 + 1.0).abs() < 1e-4);
+        assert!((apply(&m, 0.0, 0.0).1 - 1.0).abs() < 1e-4);
+        assert!((apply(&m, 1920.0, 1080.0).0 - 1.0).abs() < 1e-4);
+        assert!((apply(&m, 1920.0, 1080.0).1 + 1.0).abs() < 1e-4);
+        // 4:3 窗口 → 上下黑边 0.25
+        let m = letterbox_matrix(1920.0, 1440.0);
+        assert!((apply(&m, 0.0, 0.0).1 - 0.75).abs() < 1e-4);
+        assert!((apply(&m, 1920.0, 1080.0).1 + 0.75).abs() < 1e-4);
+        assert!((apply(&m, 0.0, 0.0).0 + 1.0).abs() < 1e-4);
+        // 竖窗 → 左右黑边
+        let m = letterbox_matrix(1080.0, 1440.0);
+        assert!((apply(&m, 0.0, 0.0).0 + 1.0).abs() < 1e-4);
+        assert!((apply(&m, 1920.0, 1080.0).0 - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn pixel_space_is_isotropic() {
+        // 任意窗口比例:逻辑 (dx,dy) 在像素空间的缩放因子相同(不拉伸)
+        for (w, h) in [(1280.0, 720.0), (1920.0, 1440.0), (1080.0, 1440.0), (2560.0, 1080.0)] {
+            let m = letterbox_matrix(w, h);
+            let (x0, y0) = apply(&m, 0.0, 0.0);
+            let (x1, y1) = apply(&m, 100.0, 0.0);
+            let (x2, y2) = apply(&m, 0.0, 100.0);
+            let px_x = (x1 - x0) * w / 2.0;
+            let px_y = (y2 - y0) * h / 2.0;
+            // Y 翻转 → 比较幅值
+            assert!(
+                (px_x.abs() - px_y.abs()).abs() < 1e-2,
+                "w={w} h={h} px_x={px_x} px_y={px_y}"
+            );
+        }
     }
 }
 

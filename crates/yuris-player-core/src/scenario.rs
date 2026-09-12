@@ -41,6 +41,12 @@ pub trait ScenarioHost {
     fn show_sprite(&mut self, name: &str, path: Option<&str>, x: i64, y: i64, fade_ms: u64);
     /// 显示立绘(\T):x = 中心偏移,y = 顶边,fade_ms 淡入。
     fn show_tachie(&mut self, name: &str, x: i64, y: i64, fade_ms: u64);
+    /// 立绘位移动画(`\T` 8 参形式:x1,y1 → x2,y2,ms)。默认近似 = 直接落
+    /// 终点(测试桩零改动);播放器实现线性补间(layout-fix-plan P0)。
+    fn move_tachie(&mut self, name: &str, x1: i64, y1: i64, x2: i64, y2: i64, ms: u64) {
+        let _ = (x1, y1, ms);
+        self.show_tachie(name, x2, y2, 0);
+    }
     /// 处置精灵(淡出 ms)。
     fn hide_sprite(&mut self, name: &str, fade_ms: u64);
     /// 淡出/淡入覆盖层。
@@ -420,12 +426,18 @@ impl ScenarioPlayer {
                 false
             }
             "T" => {
-                // \T(name, ms, x, y, z?):name 空 = 纯等待;非空 = 立绘淡入后等待
+                // \T(name, ms, x, y, z?):name 空 = 纯等待;非空 = 立绘淡入后等待。
+                // 8 参形式 = 位移动画:(name, ms, x1, y1, z1, x2, y2, z2)
+                // —— 引擎实测有「浮动」滑动效果;ms = 动画时长(P0)。
                 let tname = s(0).trim().to_string();
                 let ms = n(1).max(0) as u64;
                 if !tname.is_empty() {
-                    let (x, y) = (n(2), n(3));
-                    host.show_tachie(&tname, x, y, ms);
+                    if params.len() >= 8 {
+                        host.move_tachie(&tname, n(2), n(3), n(5), n(6), ms);
+                    } else {
+                        let (x, y) = (n(2), n(3));
+                        host.show_tachie(&tname, x, y, ms);
+                    }
                 }
                 self.wait = Some(Wait::Timed {
                     until: Instant::now() + std::time::Duration::from_millis(ms),
@@ -781,6 +793,7 @@ mod camera_tests {
         bgs: RefCell<Vec<(String, i64)>>,
         bcam: RefCell<Vec<(i64, i64, i64)>>,
         ecam: RefCell<Vec<(i64, i64, i64)>>,
+        moves: RefCell<Vec<(String, i64, i64, i64, i64, u64)>>,
     }
     impl ScenarioHost for CamHost {
         fn show_bg(&mut self, name: &str, fade_ms: u64, _: [u8; 3]) {
@@ -812,6 +825,11 @@ mod camera_tests {
         fn ev_camera(&mut self, x: i64, y: i64, z: i64) {
             self.ecam.borrow_mut().push((x, y, z));
         }
+        fn move_tachie(&mut self, name: &str, x1: i64, y1: i64, x2: i64, y2: i64, ms: u64) {
+            self.moves
+                .borrow_mut()
+                .push((name.to_string(), x1, y1, x2, y2, ms));
+        }
     }
 
     fn run(script: &str) -> CamHost {
@@ -836,5 +854,15 @@ mod camera_tests {
         let h = run("#S\n\\EV.CMXYZ(-72, -216, -64)\n");
         assert_eq!(*h.ecam.borrow(), vec![(-72, -216, -64)]);
         assert!(h.bgs.borrow().is_empty());
+    }
+
+    #[test]
+    fn t_eight_params_route_to_move() {
+        // 8 参 \T = 位移动画(x1,y1,z1,x2,y2,z2)
+        let h = run("#S\n\\T(A_HAN_1A0100, 500, 100, 10, 200, 300, 20, 200)\n");
+        assert_eq!(
+            *h.moves.borrow(),
+            vec![("A_HAN_1A0100".to_string(), 100, 10, 300, 20, 500)]
+        );
     }
 }

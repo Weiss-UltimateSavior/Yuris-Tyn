@@ -101,7 +101,9 @@ fn vm_ui_layer_allowed(path_lower: &str, allow_vm_ui: bool) -> bool {
     if !allow_vm_ui {
         return false; // 标题菜单等待期:内置标题接管视觉
     }
-    let norm = path_lower.replace('/', "\\");
+    // 别名根归一:`cgsys_c` 是运行期别名根(known-issues 2.4),
+    // 否则 cgsys_c\main\pop 等状态件会绕过 deny(实机:右上 AUTO 药丸)。
+    let norm = path_lower.replace('/', "\\").replace("cgsys_c\\", "cgsys\\");
     if norm.contains(r"\debug\") {
         return false; // 引擎 debug 覆盖层
     }
@@ -114,6 +116,7 @@ fn vm_ui_layer_allowed(path_lower: &str, allow_vm_ui: bool) -> bool {
     if norm.contains(r"cgsys\main\pop\")
         || norm.contains(r"cgsys\main\autoskipicon\")
         || norm.contains(r"cgsys\main\skipicon\")
+        || norm.contains(r"cgsys\main\autoicon\")
         || norm.contains(r"cgsys\main\count\")
     {
         return false;
@@ -164,8 +167,41 @@ fn vm_ui_base_prio(name: &[u8]) -> (Vec<u8>, u8) {
     (base, prio)
 }
 
+/// 立绘角色键:名字前两段(`L_NYA_1A0100` → `L_NYA`)。
+/// 同一角色的姿态/服装/表情变体共享键 → 引擎按**角色占一层**,
+/// 变体切换 = 换图或换部件,而非叠新层(layout-fix-plan P0 勘误:
+/// `L_NYA_1A0200` 实为 7KB 部件图,需叠加在基图上并随角色移动)。
+fn tachie_char_key(name: &str) -> String {
+    let mut it = name.split('_');
+    match (it.next(), it.next()) {
+        (Some(a), Some(b)) if !a.is_empty() && !b.is_empty() => format!("{a}_{b}"),
+        _ => name.to_string(),
+    }
+}
+
 fn scene_mut_layer(scene: &mut yuris_scene::Scene, id: u64) -> Option<&mut Layer> {
     scene.layers.iter_mut().find(|l| l.id == id)
+}
+
+/// 背景显示变换(引擎实测模型;2026-09-12 原版截图对拍,corr 0.908):
+/// - `scale = 1.25`(逻辑 px / 素材 px;2400×1200 背景实测值。可能是
+///   `iw/1920` 或固定 1.25,样本全为 2400×1200 不可分,取 1.25);
+/// - 可见素材区 = 1920/scale × 1080/scale;
+/// - 区域中心 = 图中心 + `cam × 0.5`(实测偏移比 0.517/0.568,取 0.5),
+///   并钳制在图内(不露黑边);
+/// - 返回图层 `(x, y, scale)`(x/y = 可见区左上角的负逻辑坐标)。
+/// 相机方向/系数等级 **Likely**(单点实测),实机截图复核后可微调。
+fn bg_cover_transform(iw: u32, ih: u32, cam: (i64, i64, i64)) -> (f32, f32, f32) {
+    let (iwf, ihf) = (iw.max(1) as f32, ih.max(1) as f32);
+    // 引擎实测缩放;小图保底 cover(不露黑边)
+    let s = 1.25f32.max(LOGICAL_W / iwf).max(LOGICAL_H / ihf);
+    let (vw, vh) = (LOGICAL_W / s, LOGICAL_H / s);
+    let (cx, cy, _cz) = cam;
+    let mut x0 = (iwf - vw) / 2.0 + cx as f32 * 0.5;
+    let mut y0 = (ihf - vh) / 2.0 + cy as f32 * 0.5;
+    x0 = x0.clamp(0.0, (iwf - vw).max(0.0));
+    y0 = y0.clamp(0.0, (ihf - vh).max(0.0));
+    (-x0 * s, -y0 * s, s)
 }
 
 /// 三态按钮公共体(标题按钮与子画面按钮共用):按光标/按下帧计算每钮的
@@ -219,6 +255,29 @@ pub struct FadeState {
     pub start: Instant,
     pub ms: u64,
     pub color: [u8; 3],
+}
+
+/// 立绘显示比例(× m_050 原生像素)。2026-09-12 原版引擎截图对拍实测:
+/// 三角色(k_pen/l_nya/m_lop)一致 0.930/0.930/0.929(内容 16:9 标定,
+/// corr 0.97~0.99)。layout-fix-plan P0。
+pub const TACHIE_SCALE: f32 = 0.93;
+
+/// 立绘循环上下浮动(实机:原版三玩偶持续上下浮动;仅 y, x 不动)。
+/// 幅度/周期来自三帧原版静图估计(k_pen 顶缘摆幅 ≈39 逻辑 px、
+/// l_nya ≈26,m_lop 样本不稳);周期无计时证据取 2.8s。
+/// **UNVERIFIED(浮动参数)**:可用录屏计时后精确标定。
+pub const TACHIE_FLOAT_AMP: f32 = 18.0;
+/// 浮动周期(秒)。
+pub const TACHIE_FLOAT_PERIOD: f32 = 2.8;
+
+/// 浮动偏移(纯函数,可单测):正弦上下,相位逐角色不同。
+fn tachie_float_dy(elapsed_s: f32, phase: f32) -> f32 {
+    TACHIE_FLOAT_AMP * (elapsed_s * std::f32::consts::TAU / TACHIE_FLOAT_PERIOD + phase).sin()
+}
+
+/// 立绘浮动相位(按层 id 稳定派生;同角色每次运行一致)。
+fn tachie_float_phase(id: u64) -> f32 {
+    ((id % 997) as f32 / 997.0) * std::f32::consts::TAU
 }
 
 /// 标题按钮三态下标(素材后缀 `_off`/`_on`/`_over`;成果 78 图像实证)。
@@ -315,6 +374,12 @@ pub struct PlayerCore {
     pub sprites: Vec<u64>,
     /// 精灵淡入/淡出动画:(id, 开始, ms, 淡出?)。
     pub sprite_fades: Vec<(u64, Instant, u64, bool)>,
+    /// 立绘位移动画(`\T` 8 参):(id, 开始, ms, 起点, 终点)。
+    pub sprite_moves: Vec<(u64, Instant, u64, (f32, f32), (f32, f32))>,
+    /// 立绘循环浮动:id → (相位, 基准 x/y;浮动叠加上去)。
+    pub tachie_float: std::collections::HashMap<u64, (f32, (f32, f32))>,
+    /// 浮动动画时钟起点(进程内单调)。
+    pub float_clock: Instant,
     /// 音频包索引 + 播放器(P9.1)。
     pub audio_packs: Arc<PacFileIndex>,
     pub audio: crate::audio::Audio,
@@ -820,6 +885,52 @@ impl PlayerCore {
     }
 
     /// 精灵淡入/淡出动画推进(\S/\T 的 fade_ms 与 \S.D 淡出)。
+    /// 立绘位移动画步进(每帧;完成后钉在终点)。
+    fn update_sprite_moves(&mut self) {
+        if self.sprite_moves.is_empty() && self.tachie_float.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut done: Vec<u64> = Vec::new();
+        for (id, start, ms, from, to) in &self.sprite_moves {
+            let t = (now - *start).as_secs_f32() / (*ms.max(&1) as f32 / 1000.0);
+            let t = t.clamp(0.0, 1.0);
+            let x = from.0 + (to.0 - from.0) * t;
+            let y = from.1 + (to.1 - from.1) * t;
+            if let Some(layer) = scene_mut_layer(self.bridge.scene_mut(), *id) {
+                layer.x = x;
+                layer.y = y;
+            }
+            if let Some(entry) = self.tachie_float.get_mut(id) {
+                entry.1 = (x, y);
+            }
+            if t >= 1.0 {
+                done.push(*id);
+            }
+        }
+        self.sprite_moves.retain(|m| !done.contains(&m.0));
+        // 循环上下浮动(基准 + 正弦偏移;P0 实测)
+        let elapsed = self.float_clock.elapsed().as_secs_f32();
+        for (id, (phase, (bx, by))) in &self.tachie_float {
+            if let Some(layer) = scene_mut_layer(self.bridge.scene_mut(), *id) {
+                layer.x = *bx;
+                layer.y = *by + tachie_float_dy(elapsed, *phase);
+            }
+        }
+    }
+
+    /// 按层 id 隐藏精灵(淡出动画完成由 tick 收尾隐藏)。先撤销同 id
+    /// 未完成的淡入条目(否则 in/out 双条目同帧互写 alpha)。
+    fn hide_sprite_id(&mut self, id: u64, fade_ms: u64) {
+        self.tachie_float.remove(&id);
+        if fade_ms > 0 {
+            self.sprite_fades.retain(|(fid, _, _, _)| fid != &id);
+            self.sprite_fades.push((id, Instant::now(), fade_ms, true));
+            return;
+        }
+        self.bridge.scene_mut().hide_layer(id);
+    }
+
     fn update_sprite_fades(&mut self) {
         if self.sprite_fades.is_empty() {
             return;
@@ -1715,17 +1826,25 @@ impl ScenarioHost for PlayerCore {
             .as_ref()
             .and_then(|b| b.image_size(rid.0))
             .unwrap_or((1920, 1080));
-        // 原生尺寸 + 居中 + 相机位移(不拉伸;layout-fix-plan P1)。
-        // 旧实现 scale = 1920/iw × 1080/ih 会把 2400×1200 背景压成 16:9。
-        let (cx, cy, _cz) = self.bg_cam;
+        // 原生比例 + cover 缩放 + 相机平移(**钳制到不露黑边**)。
+        // 勘误(layout-fix-plan P1 实机):参考图背景是宣发合成(缩放/裁位),
+        // 不能作引擎标定;旧「原生 1:1 居中 + 自由平移」在 2400×1200 上
+        // 平移越界 → 右侧/底部黑带。改为 cover(scale = max)后钳制:
+        //   x = clamp((1920-dw)/2 - cam.x*s, 1920-dw, 0)
+        // 方向符号(cam.x>0 = 视口右移)与缩放倍率待实机对拍(Likely)。
+        let (x, y, s) = bg_cover_transform(iw, ih, self.bg_cam);
+        eprintln!(
+            "[scenario] BG {trimmed:?} {iw}x{ih} → ({:.1},{:.1}) s={:.3}",
+            x, y, s
+        );
         let layer = Layer {
             id: SC_BG,
             z: 0,
             visible: true,
-            x: (LOGICAL_W - iw as f32) / 2.0 - cx as f32,
-            y: (LOGICAL_H - ih as f32) / 2.0 - cy as f32,
-            scale_x: 1.0,
-            scale_y: 1.0,
+            x,
+            y,
+            scale_x: s,
+            scale_y: s,
             alpha: 1.0,
             rotation: 0.0,
             resource: Some(rid),
@@ -1747,9 +1866,10 @@ impl ScenarioHost for PlayerCore {
             .and_then(|l| l.resource)
             .and_then(|r| self.backend.as_ref().and_then(|b| b.image_size(r.0)));
         if let Some((iw, ih)) = size {
+            let (nx, ny, _s) = bg_cover_transform(iw, ih, self.bg_cam);
             if let Some(layer) = scene_mut_layer(self.bridge.scene_mut(), SC_BG) {
-                layer.x = (LOGICAL_W - iw as f32) / 2.0 - x as f32;
-                layer.y = (LOGICAL_H - ih as f32) / 2.0 - y as f32;
+                layer.x = nx;
+                layer.y = ny;
             }
         }
     }
@@ -1796,9 +1916,9 @@ impl ScenarioHost for PlayerCore {
     }
 
     fn show_tachie(&mut self, name: &str, x: i64, y: i64, fade_ms: u64) {
-        // \T:立绘;x = 中心偏移,y = **顶边**(参考图标定:y=0 时素材 bbox
-        // 上缘 14px ≈ 实测头缘 8~14px;档位 m_050 原生像素,layout-fix-plan P0)。
-        // UNVERIFIED(锚点):旧「y = 底部偏移」公式会把 2000+px 立绘切头。
+        // \T:立绘;x = 中心偏移,y = **顶边**,显示比例 = 0.93 × m_050 原生
+        // (2026-09-12 原版截图对拍:三角色实测 0.930/0.930/0.929,corr≥0.97;
+        // 引擎位移动画期位置会浮动,静止锚点=顶边 —— layout-fix-plan P0)。
         let Some(rid) = self.load_scenario_image(name) else {
             eprintln!("[scenario] 立绘未命中: {name}");
             return;
@@ -1808,12 +1928,42 @@ impl ScenarioHost for PlayerCore {
             .as_ref()
             .and_then(|b| b.image_size(rid.0))
             .unwrap_or((880, 1200));
-        let id = fnv1a(name.as_bytes());
+        // 角色键 = 按角色占一层(变体切换换图,不叠层;P0 勘误)
+        let id = fnv1a(tachie_char_key(name).as_bytes());
+        let px = LOGICAL_W / 2.0 + x as f32 - iw as f32 * TACHIE_SCALE / 2.0;
+        let py = y as f32;
+        // 部件变体近似:新图显著小于当前基图(如 7KB 表情/服装部件)→
+        // 保留基图、只同步位置(引擎为基图+部件合成;部件偏移表未取证)。
+        let existing = self
+            .bridge
+            .scene()
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .and_then(|l| l.resource)
+            .and_then(|r| self.backend.as_ref().and_then(|b| b.image_size(r.0)));
+        if let Some((ow, oh)) = existing {
+            let old_px = (ow as u64) * (oh as u64);
+            let new_px = (iw as u64) * (ih as u64);
+            if new_px * 2 < old_px.max(1) {
+                eprintln!(
+                    "[scenario] 立绘部件变体 {name}: tex={iw}x{ih} < 基图 {ow}x{oh},保留基图并移动(近似)"
+                );
+                if let Some(layer) = scene_mut_layer(self.bridge.scene_mut(), id) {
+                    layer.x = px;
+                    layer.y = py;
+                    layer.visible = true;
+                }
+                self.tachie_float
+                    .entry(id)
+                    .or_insert_with(|| (tachie_float_phase(id), (px, py)))
+                    .1 = (px, py);
+                return;
+            }
+        }
         if !self.sprites.contains(&id) {
             self.sprites.push(id);
         }
-        let px = LOGICAL_W / 2.0 + x as f32 - iw as f32 / 2.0;
-        let py = y as f32;
         eprintln!("[scenario] 立绘 {name}: tex={iw}x{ih} → ({px},{py}) fade={fade_ms}");
         let alpha = if fade_ms > 0 { 0.0 } else { 1.0 };
         let layer = Layer {
@@ -1822,28 +1972,65 @@ impl ScenarioHost for PlayerCore {
             visible: true,
             x: px,
             y: py,
-            scale_x: 1.0,
-            scale_y: 1.0,
+            scale_x: TACHIE_SCALE,
+            scale_y: TACHIE_SCALE,
             alpha,
             rotation: 0.0,
             resource: Some(rid),
         };
         self.bridge.scene_mut().upsert_layer(layer);
+        self.tachie_float
+            .entry(id)
+            .or_insert_with(|| (tachie_float_phase(id), (px, py)))
+            .1 = (px, py);
         if fade_ms > 0 {
             self.sprite_fades.push((id, Instant::now(), fade_ms, false));
         }
     }
 
-    fn hide_sprite(&mut self, name: &str, fade_ms: u64) {
-        let id = fnv1a(name.as_bytes());
-        if fade_ms > 0 {
-            // 淡出:动画完成由 tick 收尾隐藏。先撤销同 id 未完成的淡入条目
-            // (否则 in/out 双条目同帧互写 alpha,闪烁且终态不确定)。
-            self.sprite_fades.retain(|(fid, _, _, _)| fid != &id);
-            self.sprite_fades.push((id, Instant::now(), fade_ms, true));
+    /// `\T` 8 参位移动画(x1,y1,z1 → x2,y2,z2,ms):起点建层,线性补间到终点
+    /// (引擎实测有「浮动」效果;缓动曲线 Unknown,取线性基线,layout-fix-plan P0)。
+    fn move_tachie(&mut self, name: &str, x1: i64, y1: i64, x2: i64, y2: i64, ms: u64) {
+        // 起点建层(与 show_tachie 同锚点/比例)
+        self.show_tachie(name, x1, y1, 0);
+        let id = fnv1a(tachie_char_key(name).as_bytes());
+        if ms == 0 {
+            self.show_tachie(name, x2, y2, 0);
             return;
         }
-        self.bridge.scene_mut().hide_layer(id);
+        let (iw, ih) = self
+            .bridge
+            .scene()
+            .layers
+            .iter()
+            .find(|l| l.id == id)
+            .and_then(|l| l.resource)
+            .and_then(|r| self.backend.as_ref().and_then(|b| b.image_size(r.0)))
+            .unwrap_or((880, 1200));
+        let from = (
+            LOGICAL_W / 2.0 + x1 as f32 - iw as f32 * TACHIE_SCALE / 2.0,
+            y1 as f32,
+        );
+        let to = (
+            LOGICAL_W / 2.0 + x2 as f32 - iw as f32 * TACHIE_SCALE / 2.0,
+            y2 as f32,
+        );
+        self.sprite_moves.retain(|m| m.0 != id);
+        self.sprite_moves.push((id, Instant::now(), ms, from, to));
+        self.tachie_float
+            .entry(id)
+            .or_insert_with(|| (tachie_float_phase(id), from))
+            .1 = from;
+    }
+
+
+    fn hide_sprite(&mut self, name: &str, fade_ms: u64) {
+        // 立绘按角色键占层:名称形态不同仍可命中(全名键 + 角色键都试)
+        self.hide_sprite_id(fnv1a(name.as_bytes()), fade_ms);
+        let cid = fnv1a(tachie_char_key(name).as_bytes());
+        if cid != fnv1a(name.as_bytes()) {
+            self.hide_sprite_id(cid, fade_ms);
+        }
     }
 
     fn fade(&mut self, out: bool, ms: u64, color: [u8; 3]) {
@@ -2262,6 +2449,7 @@ impl Player {
         core.consume_events(allow_vm_ui);
         core.update_fade();
         core.update_sprite_fades();
+        core.update_sprite_moves(); // \T 位移动画(P0)
         // ADV 主行:点击消费(禁触台词推进;动作路由 = P9.2 待实装)
         if core.clicked && core.subui == SubUi::None && !in_title {
             if let Some(i) = core.adv_button_hit() {
@@ -2373,6 +2561,7 @@ impl Player {
             scene.hide_layer(id);
         }
         self.core.sprite_fades.clear(); // 挂起淡入会把已隐藏层重新点亮(残留修复)
+        self.core.sprite_moves.clear(); // 位移动画不跨读档
         scene.hide_layer(SC_TEXT);
         scene.hide_layer(SC_WIN);
         self.core.clear_choices();
@@ -2399,6 +2588,8 @@ impl PlayerCore {
             scene.hide_layer(id);
         }
         self.sprite_fades.clear();
+        self.sprite_moves.clear();
+        self.tachie_float.clear();
         scene.hide_layer(SC_TEXT);
         scene.hide_layer(SC_WIN);
         scene.hide_layer(SC_FADE);
@@ -2487,6 +2678,9 @@ mod title_se_tests {
             clicked: false,
             sprites: Vec::new(),
             sprite_fades: Vec::new(),
+            sprite_moves: Vec::new(),
+            tachie_float: std::collections::HashMap::new(),
+            float_clock: Instant::now(),
             audio_packs: Arc::new(PacFileIndex::default()),
             audio: crate::audio::Audio::new(),
             choices: None,
@@ -2597,6 +2791,9 @@ mod subui_tests {
             clicked: false,
             sprites: Vec::new(),
             sprite_fades: Vec::new(),
+            sprite_moves: Vec::new(),
+            tachie_float: std::collections::HashMap::new(),
+            float_clock: Instant::now(),
             audio_packs: Arc::new(PacFileIndex::default()),
             audio: crate::audio::Audio::new(),
             choices: None,
@@ -2834,6 +3031,62 @@ mod layout_tests {
         assert!(vm_ui_layer_allowed("cgsys/saveload/back_load", true));
         // 标题等待期整体关闭
         assert!(!vm_ui_layer_allowed("cgsys/main/button/type1/btn_auto_bt4", false));
+    }
+
+    #[test]
+    fn bg_engine_model_matches_on_machine_measure() {
+        // 引擎实测(2026-09-12 原版截图,corr 0.908):S=1.25,
+        // 可见区 1536×864,中心 + cam×0.5
+        let (x, y, s) = bg_cover_transform(2400, 1200, (0, 0, 0));
+        assert!((s - 1.25).abs() < 1e-6);
+        assert_eq!((x, y), (-540.0, -210.0)); // x0=432, y0=168
+        // maho2_01 办公室:cam(507,296) → x0=685.5, y0=316(实测 694/336 ±1%)
+        let (x, y, _) = bg_cover_transform(2400, 1200, (507, 296, 0));
+        assert!((x + 856.875).abs() < 0.01, "x={x}");
+        assert!((y + 395.0).abs() < 0.01, "y={y}");
+        // 相机越界 → 钳制在图内(不露黑边)
+        let (x, y, _) = bg_cover_transform(2400, 1200, (100000, 100000, 0));
+        assert_eq!((x, y), (-1080.0, -420.0));
+        // 小于视口的图 → 保底 cover 放大填满
+        let (x, y, s) = bg_cover_transform(1280, 720, (0, 0, 0));
+        assert!((s - 1.5).abs() < 1e-6);
+        assert_eq!((x, y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn vm_ui_filter_normalizes_alias_root() {
+        // cgsys_c 运行期别名根(known-issues 2.4)必须与 cgsys 同判
+        assert!(!vm_ui_layer_allowed("cgsys_c/main/pop/tip_config", true));
+        assert!(!vm_ui_layer_allowed("cgsys_c/main/autoicon/icon_01", true));
+        assert!(!vm_ui_layer_allowed("cgsys/main/autoicon/icon_01", true));
+        assert!(vm_ui_layer_allowed(
+            "cgsys_c/main/button/type1/btn_auto_bt4",
+            true
+        ));
+    }
+
+    #[test]
+    fn tachie_char_key_groups_variants() {
+        // 同角色变体共享键(按角色占一层,不叠层)
+        assert_eq!(tachie_char_key("L_NYA_1A0100"), "L_NYA");
+        assert_eq!(tachie_char_key("L_NYA_1A0200"), "L_NYA");
+        assert_eq!(tachie_char_key("A_HAN_2B0200"), "A_HAN");
+    }
+
+    #[test]
+    fn tachie_float_is_bounded_and_periodic() {
+        // 正弦浮动:幅度有界;一个周期后回到同值
+        let mut max = 0.0f32;
+        for i in 0..280 {
+            let dy = tachie_float_dy(i as f32 * 0.01, 0.0);
+            max = max.max(dy.abs());
+        }
+        assert!((max - TACHIE_FLOAT_AMP).abs() < 0.5, "max={max}");
+        let a = tachie_float_dy(0.3, 1.2);
+        let b = tachie_float_dy(0.3 + TACHIE_FLOAT_PERIOD, 1.2);
+        assert!((a - b).abs() < 1e-3);
+        // 相位不同 → 偏移不同(三玩偶错相位)
+        assert!((tachie_float_dy(0.7, 0.0) - tachie_float_dy(0.7, 1.5)).abs() > 0.1);
     }
 
     #[test]
